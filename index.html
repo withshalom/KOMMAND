@@ -701,14 +701,14 @@ body.drafting-mode #app { pointer-events:auto; z-index:20; }
 .sb-cc {
   display: flex; align-items: center; gap: 5px;
   padding: 0 12px; border-left: 1px solid var(--border);
-  font-family: var(--fu); font-size: 12px; color: var(--t3);
+  font-family: var(--fu); font-size: 15px; color: var(--t2);
   letter-spacing: 0.04em; white-space: nowrap;
 }
 .cc-link {
-  color: var(--accent-dim); text-decoration: none;
+  color: var(--accent); font-weight: 600; text-decoration: none;
   transition: color 0.15s;
 }
-.cc-link:hover { color: var(--accent); text-decoration: underline; }
+.cc-link:hover { text-decoration: underline; }
 
 /* ── TOAST ── */
 #toast { position:fixed; bottom:46px; left:50%; transform:translateX(-50%) translateY(10px); background:var(--panel2); border:1px solid var(--border-hi); border-radius:4px; padding:6px 14px; font-size:13px; font-family:var(--fu); color:var(--t1); pointer-events:none; opacity:0; transition:opacity 0.18s,transform 0.18s; z-index:999; }
@@ -2440,8 +2440,8 @@ body.light-mode .tool-btn.active .tool-icon svg {
     <div class="sb-item"><span>D</span><span class="sb-val">measure</span></div>
     <div class="sb-item"><span class="sb-val ok">KAD v0.0</span></div>
     <div class="sb-cc">
-      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" style="flex-shrink:0;opacity:0.7"><circle cx="12" cy="12" r="9"/><path d="M10 9.5A2.5 2.5 0 0 0 7.5 12a2.5 2.5 0 0 0 2.5 2.5"/><path d="M16 9.5A2.5 2.5 0 0 0 13.5 12a2.5 2.5 0 0 0 2.5 2.5"/></svg>
-      <span>© <span id="cc-year"></span> KADsuite™ · KAD Kernel-Aided Design · AGPL-3.0 · <a href="https://kadsuite.com" target="_blank" rel="noopener" class="cc-link">kadsuite.com</a> · withshalom</span>
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" style="flex-shrink:0;opacity:0.85"><circle cx="12" cy="12" r="9"/><path d="M10 9.5A2.5 2.5 0 0 0 7.5 12a2.5 2.5 0 0 0 2.5 2.5"/><path d="M16 9.5A2.5 2.5 0 0 0 13.5 12a2.5 2.5 0 0 0 2.5 2.5"/></svg>
+      <span>© <span id="cc-year"></span> KADsuite™ · KAD Kernel-Aided Design · AGPL-3.0 · <a href="https://withshalom.com" target="_blank" rel="noopener" class="cc-link">Designed by WithShalom Studios</a></span>
     </div>
   </div>
 </div>
@@ -5165,6 +5165,29 @@ function onWheel(e) {
 // ── KEYBOARD ────────────────────────────────────────────
 window.addEventListener('keydown', onKeyDown);
 
+// Enter finishes whatever draw operation is currently in progress —
+// shared by the canvas-level key handler (below) and, when the KOMMAND
+// bar is empty, the KOMMAND bar's own Enter handler. One source of
+// truth so "focus the canvas vs. focus KOMMAND" can't behave differently.
+function commitInProgressDraw() {
+  if(activeTool==='line'&&lineState.active){
+    if(lineChain.length>=2){
+      commitLineChain(false);
+    } else {
+      cancelTool();
+    }
+    render(); return true;
+  }
+  if(activeTool==='rect'&&rectState.active){
+    const wp=snapActive&&snapPoint?snapPoint:mouseWorld;
+    commitRect(rectState.x1,rectState.y1,wp.x,wp.y);
+    rectState={active:false};
+    document.getElementById('rect-preview').style.display='none';
+    render(); return true;
+  }
+  return false;
+}
+
 function onKeyDown(e) {
   if(document.activeElement===dynField) return;
   if(document.activeElement.tagName==='INPUT') return;
@@ -5179,21 +5202,7 @@ function onKeyDown(e) {
     render(); return;
   }
   if(k==='Enter'){
-    if(activeTool==='line'&&lineState.active){
-      if(lineChain.length>=2){
-        commitLineChain(false);
-      } else {
-        cancelTool();
-      }
-      render(); return;
-    }
-    if(activeTool==='rect'&&rectState.active){
-      const wp=snapActive&&snapPoint?snapPoint:mouseWorld;
-      commitRect(rectState.x1,rectState.y1,wp.x,wp.y);
-      rectState={active:false};
-      document.getElementById('rect-preview').style.display='none';
-      render();
-    }
+    commitInProgressDraw();
     return;
   }
   if(k==='Delete'||k==='Backspace'){ deleteSelected(); return; }
@@ -8517,6 +8526,14 @@ kInput.addEventListener('keydown', function(e) {
 
   if (e.key === 'Enter' || e.key === 'Tab') {
     e.preventDefault();
+    if (!kInput.value.trim()) {
+      // Empty bar — Enter means "finish the current draw," same as it
+      // does on the canvas. submitKommandText() would just no-op on
+      // empty input, which is the bug this fixes: Enter in KOMMAND
+      // used to only ever mean "submit typed text," never "commit."
+      commitInProgressDraw();
+      return;
+    }
     submitKommandText(kInput.value);
     return;
   }
