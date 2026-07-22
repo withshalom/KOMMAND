@@ -1560,8 +1560,15 @@ body.light-mode .tool-btn.active .tool-icon svg {
   bottom: calc(10px + env(safe-area-inset-bottom, 0px));
 }
 .mobile-mode #kommand-label { display: none; }
-.mobile-mode #kommand-context { min-width: 0; }
+.mobile-mode #kommand-context { min-width: 0; max-width: 76px; }
+.mobile-mode #kommand-context-label { overflow: hidden; text-overflow: ellipsis; }
 .mobile-mode #kommand-echo { max-width: 64px; text-overflow: ellipsis; }
+/* voice-btn added 46px of fixed-width chrome to this pill after the fix
+   above was tuned — capping the tool label (was unbounded; long names
+   like MEASURE/STRETCH/CHAMFER could widen the pill unpredictably) and
+   trimming the mic button's own margin keeps the worst case comfortably
+   inside a 320px-wide phone rather than right at the edge of it. */
+.mobile-mode #voice-btn { margin-right: 4px; }
 
 /* Topbar: the four-line brand subtitle ate half the bar on phones */
 .mobile-mode .brand { flex-shrink: 0; margin-right: 8px; }
@@ -2128,8 +2135,8 @@ body.light-mode .tool-btn.active .tool-icon svg {
     <div id="coord-panel-body">
       <div class="coord-example">While LINE active, type to open input.</div>
       <div class="coord-example">Values entered in current unit (<span id="coord-cur-unit" style="color:var(--accent)">mm</span>):</div>
-      <div class="coord-example"><b>100,50</b> — absolute X,Y (a space works too: <b>100 50</b>)</div>
-      <div class="coord-example"><i>@50,-20</i> — relative dX,dY (or <i>@50 -20</i>)</div>
+      <div class="coord-example"><b>100,50</b> — absolute X,Y</div>
+      <div class="coord-example"><i>@50,-20</i> — relative dX,dY</div>
       <div class="coord-example"><em>@100&lt;45</em> — polar dist&lt;angle°</div>
       <div class="coord-example"><b>50</b> or <i>@50</i> — length only; extends toward
         the cursor, or the locked angle if angle lock is on</div>
@@ -2137,6 +2144,8 @@ body.light-mode .tool-btn.active .tool-icon svg {
         then a length on the next line</div>
       <div class="coord-example"><em>@&lt;30</em> then <b>100</b> — turn 30° from the
         current heading, then a length</div>
+      <div class="coord-example"><b>LINE 0,0 0,10 COMMIT</b> — a whole script line,
+        space-separated; each token runs like its own Enter</div>
       <div class="coord-example" style="margin-top:6px;color:var(--red);">🎤 Voice: tap the mic —
         "at fifty comma twenty five", "circle", "delete", "commit".</div>
       <div class="coord-example" style="color:var(--red);">🎤 Or a whole sentence: "draft a line
@@ -7971,6 +7980,17 @@ const KOMMANDS = {
   'PA':      () => pasteSelected(),
   'REDO':    () => { if(typeof redo==='function') redo(); kecho('Redo'); },
   'CLEAR':   () => { if(confirm('Clear all?')){ GeoMemory.clear(); render(); kecho('Cleared'); } },
+  'DELETE':  () => deleteSelected(),
+  'DEL':     () => deleteSelected(),
+  'ESCAPE':  () => { cancelTool(); kecho('Cancelled'); render(); },
+  'CANCEL':  () => { cancelTool(); kecho('Cancelled'); render(); },
+  'COMMIT':  () => {
+    if (activeTool === 'line' && lineState.active && lineChain && lineChain.length >= 2) {
+      commitLineChain(false); kecho('Committed'); render();
+    } else { kecho('Nothing to commit', 'err'); }
+  },
+  'IN':      () => { splashSelectUnit('in'); kecho('Units: in'); },
+  'MM':      () => { splashSelectUnit('mm'); kecho('Units: mm'); },
   'NEW':     () => { if(confirm('New document?')){ GeoMemory.clear(); render(); kecho('New document'); } },
 };
 
@@ -7983,19 +8003,19 @@ let typedAngleLock;
 function parseKommandCoord(raw) {
   const s = raw.trim();
   // Polar relative: @D<A
-  const polar = s.match(/^@([+-]?[\d.]+)\s*<\s*([+-]?[\d.]+)$/);
+  const polar = s.match(/^@([+-]?[\d.]+)<([+-]?[\d.]+)$/);
   if (polar) {
     const d = fromDisplay(parseFloat(polar[1]));
     const a = parseFloat(polar[2]) * Math.PI / 180;
     return { mode:'polar', d, a };
   }
   // Relative: @dX,dY
-  const rel = s.match(/^@([+-]?[\d.]+)[,\s]+([+-]?[\d.]+)$/);
+  const rel = s.match(/^@([+-]?[\d.]+),([+-]?[\d.]+)$/);
   if (rel) {
     return { mode:'rel', dx:fromDisplay(parseFloat(rel[1])), dy:fromDisplay(parseFloat(rel[2])) };
   }
   // Absolute: X,Y
-  const abs = s.match(/^([+-]?[\d.]+)[,\s]+([+-]?[\d.]+)$/);
+  const abs = s.match(/^([+-]?[\d.]+),([+-]?[\d.]+)$/);
   if (abs) {
     return { mode:'abs', x:fromDisplay(parseFloat(abs[1])),
                          y:fromDisplay(parseFloat(abs[2])) };
@@ -8011,13 +8031,13 @@ function parseKommandCoord(raw) {
   // Angle on its own — "<45" then a length next. Lets you set the exact
   // direction first, independent of angle-snap increments, then type the
   // length as a separate entry: <45 [Enter] 100 [Enter].
-  const angleOnly = s.match(/^<\s*([+-]?[\d.]+)$/);
+  const angleOnly = s.match(/^<([+-]?[\d.]+)$/);
   if (angleOnly) return { mode:'anglelock', a: parseFloat(angleOnly[1]) * Math.PI / 180 };
   // @<angle — RELATIVE angle: turn this many degrees from the current
   // heading (previous committed segment, or the current mouse-aim if
   // there isn't one yet), rather than an absolute bearing from 0°.
   // "@" = relative, "<" = angle, same grammar as everywhere else.
-  const angleRel = s.match(/^@\s*<\s*([+-]?[\d.]+)$/);
+  const angleRel = s.match(/^@<([+-]?[\d.]+)$/);
   if (angleRel) return { mode:'anglelockrel', a: parseFloat(angleRel[1]) * Math.PI / 180 };
   return null;
 }
@@ -8042,53 +8062,42 @@ function resolveCoord(parsed, lastX, lastY, lastAngle) {
 // Submit a raw KOMMAND string — shared by typed Enter and voice input, so
 // both go through the exact same tool-word / action-word / coordinate
 // resolution with no duplicated logic to drift out of sync.
-function submitKommandText(rawText) {
-  const raw = (rawText || '').trim().toUpperCase();
+// Resolve and apply ONE token — a command word or a single coordinate/
+// angle/distance entry. Shared by plain single-token input and by each
+// step of a multi-token script line below.
+function submitKommandSingle(tokenText) {
+  const raw = tokenText.trim().toUpperCase();
   if (!raw) return;
-
-  // Check command words first
-  if (KOMMANDS[raw]) {
-    KOMMANDS[raw]();
-    kommandClear();
-    return;
-  }
-  // Voice-only action words (delete/commit/escape) — not normally typed,
-  // but recognized here too so a stray typed match still works.
-  if (VOICE_ACTIONS[raw]) {
-    VOICE_ACTIONS[raw]();
-    kommandClear();
-    return;
-  }
-
-  // Try coordinate parse
-  const parsed = parseKommandCoord(rawText.trim());
-  if (parsed) {
-    applyKommandCoord(parsed);
-    kommandClear();
-    return;
-  }
-
+  if (KOMMANDS[raw]) { KOMMANDS[raw](); return; }
+  const parsed = parseKommandCoord(tokenText.trim());
+  if (parsed) { applyKommandCoord(parsed); return; }
   kecho('Unknown: ' + raw, 'err');
 }
 
-// Action words that aren't already typed KOMMANDS but make sense spoken —
-// COMMIT is the important one: voice must NOT auto-finish a polyline just
-// because a segment was dictated, only when this word is heard explicitly.
-const VOICE_ACTIONS = {
-  'DELETE':  () => deleteSelected(),
-  'REMOVE':  () => deleteSelected(),
-  'ESCAPE':  () => { cancelTool(); kecho('Cancelled'); render(); },
-  'CANCEL':  () => { cancelTool(); kecho('Cancelled'); render(); },
-  'COMMIT':  () => {
-    if (activeTool === 'line' && lineState.active && lineChain && lineChain.length >= 2) {
-      commitLineChain(false);
-      kecho('Committed');
-      render();
-    } else {
-      kecho('Nothing to commit', 'err');
-    }
-  },
-};
+// Submit a raw KOMMAND string — a single command/coordinate, OR a full
+// AutoCAD-style script line: space-separated tokens, each resolved and
+// applied in order exactly as if typed alone and Enter pressed after
+// each one. Space is reserved purely as the token delimiter now — comma
+// is the only in-token separator — so there's no ambiguity about where
+// one token ends and the next begins. Voice input builds these same
+// space-joined strings and submits them here too (see processVoiceTranscript),
+// so typed and spoken multi-step commands share one execution path.
+function submitKommandText(rawText) {
+  // A trailing space is itself the commit signal — same as AutoCAD's
+  // blank Enter to end a command. No typed/spoken "COMMIT" word needed;
+  // one more space after the last token does it.
+  const hasTrailingSpace = /\s$/.test(rawText || '');
+  const trimmed = (rawText || '').trim();
+  if (!trimmed) return;
+  const tokens = trimmed.split(/\s+/);
+  if (tokens.length > 1) {
+    for (const tok of tokens) submitKommandSingle(tok);
+  } else {
+    submitKommandSingle(trimmed);
+  }
+  if (hasTrailingSpace) submitKommandSingle('COMMIT');
+  kommandClear();
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 //  VOICE INPUT — speaks KAD's own syntax, not natural language. The goal
@@ -8169,7 +8178,7 @@ const VOICE_TOOL_WORDS = {
   array:'ARRAY', stretch:'STRETCH', fillet:'FILLET', chamfer:'CHAMFER',
   select:'SELECT', selection:'SELECT',
 };
-// Bare action words → KOMMANDS or VOICE_ACTIONS keys.
+// Bare action words → KOMMANDS keys (DELETE/ESCAPE/CANCEL/COMMIT included).
 const VOICE_ACTION_WORDS = {
   undo:'UNDO', redo:'REDO', copy:'COPY', paste:'PASTE',
   delete:'DELETE', remove:'DELETE', escape:'ESCAPE', cancel:'CANCEL',
@@ -8283,11 +8292,15 @@ function findToolWord(s) {
 // Returns an array of steps ({unit}, {direct}, or {text}) or null if the
 // sentence doesn't match a known multi-step pattern — caller falls back
 // to the single-phrase interpreter above.
+// Returns a single space-joined KOMMAND script string (e.g. "LINE 0,0
+// 0,10") ready for submitKommandText — same multi-token mechanism typed
+// input now uses, so voice and typing share one execution path with no
+// separate stepping/timing logic to keep in sync.
 function interpretVoiceSentence(raw) {
   const s = raw.toLowerCase().trim().replace(/[.,!?]+$/, '');
-  const steps = [];
+  const tokens = [];
   const unit = detectUnitWord(s);
-  if (unit && typeof unitMode !== 'undefined' && unit !== unitMode) steps.push({ unit });
+  if (unit && typeof unitMode !== 'undefined' && unit !== unitMode) tokens.push(unit.toUpperCase());
   const toolKey = findToolWord(s);
   if (!toolKey) return null; // every pattern below needs a named tool
 
@@ -8295,7 +8308,7 @@ function interpretVoiceSentence(raw) {
   let m = s.match(/(?:start(?:ing)?\s+at|from)\s+(.+?)\s+(?:and\s+)?(?:end(?:ing)?\s+at|to)\s+(.+)$/);
   if (m) {
     const p1 = parseCoordPhrase(m[1]), p2 = parseCoordPhrase(m[2]);
-    if (p1 && p2) { steps.push({direct:toolKey},{text:p1},{text:p2}); return steps; }
+    if (p1 && p2) { tokens.push(toolKey, p1, p2); return tokens.join(' ') + ' '; }
   }
 
   // "...start(ing) at X ... N degree(s) ... N inch(es) long"
@@ -8309,45 +8322,26 @@ function interpretVoiceSentence(raw) {
     const startPhrase = startCut > -1 ? rest.slice(0, startCut) : rest;
     const p0 = parseCoordPhrase(startPhrase);
     if (p0 && angle !== null && length) {
-      steps.push({direct:toolKey}, {text:p0}, {text:'<'+angle}, {text:length});
-      return steps;
+      tokens.push(toolKey, p0, '<' + angle, length);
+      return tokens.join(' ') + ' ';
     }
   }
   return null;
 }
 
-// Runs a step list in order, pausing briefly between each so setTool()/
-// applyKommandCoord() side effects (line started, anchor placed) are
-// settled before the next step depends on them.
-function executeVoiceSteps(steps, label) {
-  let i = 0;
-  function next() {
-    if (i >= steps.length) return;
-    const step = steps[i]; i++;
-    if (step.unit) { splashSelectUnit(step.unit); }
-    else if (step.direct) {
-      if (KOMMANDS[step.direct]) KOMMANDS[step.direct]();
-      else if (VOICE_ACTIONS[step.direct]) VOICE_ACTIONS[step.direct]();
-    } else if (step.text) {
-      submitKommandText(step.text);
-    }
-    if (i < steps.length) setTimeout(next, 220);
-  }
-  kecho('🎤 "' + label + '" → ' + steps.length + ' steps', 'ok');
-  next();
-}
-
 function processVoiceTranscript(transcript) {
-  // Try the multi-step sentence patterns first — they need the raw
-  // transcript (not the single-phrase-cleaned version) to see the full
-  // sentence structure.
-  const multiStep = interpretVoiceSentence(transcript);
-  if (multiStep) { executeVoiceSteps(multiStep, transcript); return; }
+  // Multi-step sentence patterns first — they need the raw transcript
+  // (not the single-phrase-cleaned version) to see the sentence structure.
+  const script = interpretVoiceSentence(transcript);
+  if (script) {
+    kecho('🎤 "' + transcript + '" → ' + script, 'ok');
+    submitKommandText(script);
+    return;
+  }
 
   const result = voiceToKommand(transcript);
   if (result.direct) {
-    if (KOMMANDS[result.direct]) KOMMANDS[result.direct]();
-    else if (VOICE_ACTIONS[result.direct]) VOICE_ACTIONS[result.direct]();
+    submitKommandSingle(result.direct);
     kecho('🎤 "' + transcript + '" → ' + result.direct, 'ok');
     kommandClear();
     return;
@@ -8394,11 +8388,70 @@ function resetVoiceSilenceTimer() {
   }, VOICE_SILENCE_MS);
 }
 
-function toggleVoiceListening() {
+// Human-readable text for every error getUserMedia/SpeechRecognition can
+// raise. The original code only ever surfaced the raw e.error string from
+// onerror — and a synchronous start() failure never reached onerror at
+// all, so it produced no message whatsoever. A silent failure here is
+// indistinguishable from "the button is broken," which is exactly the
+// bug report this answers. Returns null for the two states that are
+// genuinely not errors (no speech heard; a stop that was intentional).
+function voiceErrorMessage(name) {
+  switch (name) {
+    case 'not-allowed':
+    case 'NotAllowedError':
+    case 'PermissionDeniedError':
+      return 'Microphone permission denied — check the permissions icon in the address bar and allow the microphone for this site.';
+    case 'service-not-allowed':
+      return 'Voice input was blocked by the browser or a site setting — check the address bar\'s permission icon.';
+    case 'NotFoundError':
+    case 'audio-capture':
+      return 'No microphone found on this device.';
+    case 'NotReadableError':
+      return 'Microphone is already in use by another app or browser tab.';
+    case 'network':
+      return 'Voice recognition needs an internet connection.';
+    case 'no-speech':
+    case 'aborted':
+      return null;
+    default:
+      return 'Voice error: ' + name;
+  }
+}
+
+async function toggleVoiceListening() {
   if (voiceListening) { voiceRecognition.stop(); return; }
+
+  // Secure-context check FIRST. This is the #1 reason a voice feature
+  // works in local testing and then goes dead the moment the identical
+  // file is hosted: file:// and http://localhost both count as secure
+  // contexts, so SpeechRecognition behaves; a real domain served without
+  // HTTPS reaching the browser does not. Feature detection alone can't
+  // catch this — the constructor can still exist on an insecure origin
+  // and then fail (sometimes silently) the moment start() is called.
+  if (!window.isSecureContext) {
+    kecho('🎤 Voice needs HTTPS — this page isn\'t loaded over a secure connection', 'err');
+    return;
+  }
 
   const r = getVoiceRecognition();
   if (!r) { showToast('Voice input needs Chrome or Edge — not supported in this browser'); return; }
+
+  // Explicit getUserMedia pre-flight. SpeechRecognition is supposed to
+  // prompt for mic access on its own, but that implicit path is where
+  // most cross-browser inconsistency lives. Asking directly gets one
+  // well-tested permission prompt and, critically, a real named error if
+  // access is denied, missing, or already in use — instead of finding
+  // out only when SpeechRecognition fails later with a vaguer code.
+  // Skips cleanly if the API isn't present rather than blocking on it.
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop()); // just proving access — SpeechRecognition captures its own audio
+    } catch (e) {
+      kecho('🎤 ' + (voiceErrorMessage(e.name) || ('Voice error: ' + e.name)), 'err');
+      return;
+    }
+  }
 
   let finalTranscript = '';
   const btn = document.getElementById('voice-btn');
@@ -8423,7 +8476,8 @@ function toggleVoiceListening() {
     resetVoiceSilenceTimer();
   };
   r.onerror = (e) => {
-    if (e.error !== 'no-speech' && e.error !== 'aborted') kecho('Voice error: ' + e.error, 'err');
+    const msg = voiceErrorMessage(e.error);
+    if (msg) kecho('🎤 ' + msg, 'err');
   };
   r.onend = () => {
     voiceListening = false;
@@ -8434,7 +8488,19 @@ function toggleVoiceListening() {
     if (transcript) processVoiceTranscript(transcript);
   };
 
-  try { r.start(); } catch (e) { /* already started — ignore */ }
+  try {
+    r.start();
+  } catch (e) {
+    // InvalidStateError = recognition was already running — a harmless
+    // double-tap race, safe to ignore. The old code swallowed EVERY
+    // start() failure under that same assumption; anything else here
+    // (an insecure origin slipping past the check above, a
+    // Permissions-Policy block, etc.) needs to be shown, or a real
+    // problem looks identical to "nothing happens when I tap it."
+    if (e.name !== 'InvalidStateError') {
+      kecho('🎤 ' + (voiceErrorMessage(e.name) || ('Voice failed to start: ' + e.message)), 'err');
+    }
+  }
 }
 
 kInput.addEventListener('keydown', function(e) {
