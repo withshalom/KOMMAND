@@ -8626,6 +8626,16 @@ function simulateWorldClick(wx, wy) {
     preventDefault: ()=>{}, stopPropagation: ()=>{}
   };
   if (typeof onMouseDown === 'function') onMouseDown(fakeEvent);
+  // Most click-driven tools (LINE, RECT, POLYGON, ARC, CIRCLE, TRIM, DIM...)
+  // defer their real action from mousedown into selBox.deferred, run only
+  // on mouseup, so a clean click can be told apart from a drag-select. A
+  // typed KOMMAND coordinate has no drag phase, so without also firing
+  // mouseup here, onMouseDown only arms that deferred action and nothing
+  // is ever placed — the KOMMAND bar would echo a coordinate back with no
+  // corresponding geometry. Firing both completes the click exactly as a
+  // real no-drag mouse click does. This is exactly as relevant to voice
+  // input, which ultimately funnels through this same function.
+  if (typeof onMouseUp === 'function') onMouseUp(fakeEvent);
 }
 
 // Keep canvas from stealing focus from kommand bar unless clicking canvas
