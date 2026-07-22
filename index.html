@@ -2137,9 +2137,11 @@ body.light-mode .tool-btn.active .tool-icon svg {
         then a length on the next line</div>
       <div class="coord-example"><em>@&lt;30</em> then <b>100</b> — turn 30° from the
         current heading, then a length</div>
-      <div class="coord-example" style="margin-top:6px;color:var(--red);">🎤 Voice: tap the mic
-        in KOMMAND — say "at fifty comma twenty five", "circle", "delete",
-        "commit". Stops listening after a pause automatically.</div>
+      <div class="coord-example" style="margin-top:6px;color:var(--red);">🎤 Voice: tap the mic —
+        "at fifty comma twenty five", "circle", "delete", "commit".</div>
+      <div class="coord-example" style="color:var(--red);">🎤 Or a whole sentence: "draft a line
+        starting at zero zero ending at zero ten" runs all three steps.
+        Unrecognized speech is quietly ignored, never guessed at.</div>
       <div class="coord-example" style="margin-top:4px;color:var(--t3);">Press <b>Enter</b> to commit · <b>Esc</b> to cancel · <b>U</b> to toggle units</div>
     </div>
   </div>
@@ -8178,8 +8180,8 @@ const VOICE_PHRASES = { 'new document':'NEW', 'zoom extents':'Z', 'clear all':'C
 // dropped silently past this point, though: anything NOT recognized as
 // a number, symbol, or filler is kept verbatim, so a garbled phrase
 // fails loudly ("Unknown: ...") instead of silently guessing wrong.
-const VOICE_FILLER_WORDS = new Set(['go','to','then','please','now','draw','make','a','the',
-  'it','that','there','okay','ok','point']);
+const VOICE_FILLER_WORDS = new Set(['go','to','then','please','now','draw','draft','make',
+  'create','start','begin','a','the','it','that','there','okay','ok','point']);
 
 function voiceToKommand(transcript) {
   let s = transcript.toLowerCase().trim().replace(/[.,!?]+$/, '');
@@ -8198,26 +8200,168 @@ function voiceToKommand(transcript) {
   const joined = meaningful.join(' ');
   if (VOICE_PHRASES[joined]) return { direct: VOICE_PHRASES[joined] };
 
-  // Otherwise build a KOMMAND string token by token.
-  let out = [], i = 0;
+  // Otherwise build a KOMMAND string token by token. Fail SMART: a word
+  // that isn't a number, symbol, or filler is dropped, not kept — voice
+  // input should quietly decline what it can't parse rather than feed
+  // KAD's parser a string guaranteed to error.
+  let out = [], i = 0, hadUnrecognized = false;
   while (i < words.length) {
     const num = parseNumberWords(words, i);
     if (num) { out.push(num.text); i += num.consumed; continue; }
     const w = words[i];
     if (VOICE_SYMBOL_WORDS.hasOwnProperty(w)) { out.push(VOICE_SYMBOL_WORDS[w]); i++; continue; }
     if (VOICE_FILLER_WORDS.has(w)) { i++; continue; }
-    out.push(w); i++; // unrecognized — kept, so a bad parse fails visibly
+    hadUnrecognized = true; i++; // dropped, not kept
   }
-  return { text: out.join('') };
+  return { text: out.join(''), hadUnrecognized };
+}
+
+// ── Multi-step sentence interpretation ──────────────────────────────────
+// Recognizes a handful of common spoken patterns that describe a whole
+// operation in one breath and decomposes them into the same sequence of
+// individual KOMMAND submissions you'd type by hand — one tool
+// activation, then one coordinate/angle/length entry per step, run in
+// order with a short pause between each so tool state (line started,
+// anchor placed) catches up before the next step needs it.
+const VOICE_TOOL_NOUNS = {
+  line:'LINE', polyline:'PLINE', pline:'PLINE', circle:'CIRCLE', arc:'ARC',
+  rectangle:'RECT', rect:'RECT', polygon:'POLY',
+};
+
+function detectUnitWord(s) {
+  if (/\b(inches|inch)\b/.test(s)) return 'in';
+  if (/\b(millimeters|millimeter|mm)\b/.test(s)) return 'mm';
+  return null;
+}
+
+// A phrase already known (by sentence structure) to be ONE coordinate
+// pair — "zero zero", "fifty comma twenty five", "the origin", "center
+// of the drafting space". Pulls exactly two numbers regardless of what
+// separator word (if any) sits between them, since the surrounding
+// pattern already establishes it's a pair, not a free-form phrase.
+function parseCoordPhrase(phrase) {
+  const s = phrase.trim();
+  if (/\b(origin|center)\b/.test(s)) return '0,0';
+  const words = s.split(/\s+/).filter(Boolean);
+  let nums = [], i = 0, guard = 0;
+  while (i < words.length && nums.length < 2 && guard < 50) {
+    const n = parseNumberWords(words, i);
+    if (n) { nums.push(n.text); i += n.consumed; } else i++;
+    guard++;
+  }
+  return nums.length === 2 ? nums.join(',') : null;
+}
+// A phrase known to describe an angle — an explicit degree number wins;
+// a bare cardinal direction is the fallback if no number was said.
+function parseAnglePhrase(phrase) {
+  const s = phrase.trim();
+  const words = s.split(/\s+/).filter(Boolean);
+  for (let i = 0; i < words.length; i++) {
+    const n = parseNumberWords(words, i);
+    if (n) return parseFloat(n.text);
+  }
+  if (/\bup\b/.test(s))    return 90;
+  if (/\bdown\b/.test(s))  return -90;
+  if (/\bleft\b/.test(s))  return 180;
+  if (/\bright\b/.test(s)) return 0;
+  return null;
+}
+// A phrase known to describe a length — first number found, full stop.
+function parseLengthPhrase(phrase) {
+  const words = phrase.trim().split(/\s+/).filter(Boolean);
+  for (let i = 0; i < words.length; i++) {
+    const n = parseNumberWords(words, i);
+    if (n) return n.text;
+  }
+  return null;
+}
+function findToolWord(s) {
+  const m = s.match(/\b(line|polyline|pline|circle|arc|rectangle|rect|polygon)\b/);
+  return m ? VOICE_TOOL_NOUNS[m[1]] : null;
+}
+
+// Returns an array of steps ({unit}, {direct}, or {text}) or null if the
+// sentence doesn't match a known multi-step pattern — caller falls back
+// to the single-phrase interpreter above.
+function interpretVoiceSentence(raw) {
+  const s = raw.toLowerCase().trim().replace(/[.,!?]+$/, '');
+  const steps = [];
+  const unit = detectUnitWord(s);
+  if (unit && typeof unitMode !== 'undefined' && unit !== unitMode) steps.push({ unit });
+  const toolKey = findToolWord(s);
+  if (!toolKey) return null; // every pattern below needs a named tool
+
+  // "...start(ing) at X (and) end(ing) at Y" / "...from X to Y"
+  let m = s.match(/(?:start(?:ing)?\s+at|from)\s+(.+?)\s+(?:and\s+)?(?:end(?:ing)?\s+at|to)\s+(.+)$/);
+  if (m) {
+    const p1 = parseCoordPhrase(m[1]), p2 = parseCoordPhrase(m[2]);
+    if (p1 && p2) { steps.push({direct:toolKey},{text:p1},{text:p2}); return steps; }
+  }
+
+  // "...start(ing) at X ... N degree(s) ... N inch(es) long"
+  m = s.match(/start(?:ing)?\s+at\s+(.+)/);
+  if (m) {
+    const rest = m[1];
+    const angle = parseAnglePhrase(rest);
+    const lenMatch = rest.match(/be\s+(.+?)\s*(?:long)?$/) || rest.match(/(.+?)\s+long$/);
+    const length = lenMatch ? parseLengthPhrase(lenMatch[1]) : null;
+    const startCut = rest.search(/\b(go|angle|degree)/);
+    const startPhrase = startCut > -1 ? rest.slice(0, startCut) : rest;
+    const p0 = parseCoordPhrase(startPhrase);
+    if (p0 && angle !== null && length) {
+      steps.push({direct:toolKey}, {text:p0}, {text:'<'+angle}, {text:length});
+      return steps;
+    }
+  }
+  return null;
+}
+
+// Runs a step list in order, pausing briefly between each so setTool()/
+// applyKommandCoord() side effects (line started, anchor placed) are
+// settled before the next step depends on them.
+function executeVoiceSteps(steps, label) {
+  let i = 0;
+  function next() {
+    if (i >= steps.length) return;
+    const step = steps[i]; i++;
+    if (step.unit) { splashSelectUnit(step.unit); }
+    else if (step.direct) {
+      if (KOMMANDS[step.direct]) KOMMANDS[step.direct]();
+      else if (VOICE_ACTIONS[step.direct]) VOICE_ACTIONS[step.direct]();
+    } else if (step.text) {
+      submitKommandText(step.text);
+    }
+    if (i < steps.length) setTimeout(next, 220);
+  }
+  kecho('🎤 "' + label + '" → ' + steps.length + ' steps', 'ok');
+  next();
 }
 
 function processVoiceTranscript(transcript) {
+  // Try the multi-step sentence patterns first — they need the raw
+  // transcript (not the single-phrase-cleaned version) to see the full
+  // sentence structure.
+  const multiStep = interpretVoiceSentence(transcript);
+  if (multiStep) { executeVoiceSteps(multiStep, transcript); return; }
+
   const result = voiceToKommand(transcript);
   if (result.direct) {
     if (KOMMANDS[result.direct]) KOMMANDS[result.direct]();
     else if (VOICE_ACTIONS[result.direct]) VOICE_ACTIONS[result.direct]();
     kecho('🎤 "' + transcript + '" → ' + result.direct, 'ok');
     kommandClear();
+    return;
+  }
+  // Fail smart: only submit if something real came out of it. An empty
+  // result, or one built entirely from dropped/unrecognized words, is
+  // declined quietly — no red error, nothing injected into KOMMAND.
+  if (!result.text) {
+    kecho('🎤 Didn\'t catch a command');
+    return;
+  }
+  const parsed = parseKommandCoord(result.text);
+  if (!parsed) {
+    kecho('🎤 Didn\'t catch a valid command');
     return;
   }
   kInput.value = result.text;
