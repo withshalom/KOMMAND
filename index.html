@@ -4607,10 +4607,38 @@ function toggleMobileSidebar(force) {
   document.getElementById('sidebar-toggle-btn').textContent = open ? '✕' : '☰';
 }
 
+// Tapping GO shifts focus away from #kommand-input before its onclick
+// runs, which fires blur → kommandClear() → wipes the input to ''. By
+// the time submitKommandFromButton() reads inp.value, it's already gone
+// — GO always saw empty input regardless of what was typed. Capturing
+// the value at the earliest possible touch/mouse event (before that
+// blur can fire) is what actually fixes it; touchstart and mousedown
+// together cover both mobile taps and desktop clicks.
+let _goPendingValue = null;
+(function(){
+  const goBtn = document.getElementById('kommand-go-btn');
+  const capture = () => { _goPendingValue = document.getElementById('kommand-input').value; };
+  goBtn.addEventListener('touchstart', capture, {passive:true});
+  goBtn.addEventListener('mousedown', capture);
+})();
+
 function submitKommandFromButton() {
   const inp = document.getElementById('kommand-input');
+  const val = (_goPendingValue !== null) ? _goPendingValue : inp.value;
+  _goPendingValue = null;
   inp.focus();
-  inp.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true, cancelable:true}));
+  // Same two branches as the real Enter handler, called directly —
+  // dispatching a synthetic KeyboardEvent and hoping the keydown listener
+  // catches it is a well-known unreliable pattern on mobile browsers and
+  // webviews. No reason to route through event simulation when the exact
+  // same logic can just be called. Voice input already calls
+  // submitKommandText() directly too, so this makes all three entry
+  // points — typed+Enter, typed+GO, voice — go through identical logic.
+  if (!val.trim()) {
+    commitInProgressDraw();
+    return;
+  }
+  submitKommandText(val);
 }
 
 // The document-level mousedown handler closes the ctx menu before this
