@@ -737,6 +737,33 @@ body.drafting-mode #app { pointer-events:auto; z-index:20; }
 #dyn-input-hint i { color:var(--amber); font-style:normal; }
 #dyn-input-hint em { color:var(--green); font-style:normal; }
 
+#dyn-lenang-box {
+  position: absolute; z-index: 81; pointer-events: auto;
+  display: flex; gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  box-shadow: 0 0 12px rgba(0,212,255,0.25), 0 2px 8px rgba(0,0,0,0.7);
+  overflow: hidden;
+}
+.dyn-field {
+  display: flex; align-items: center; gap: 4px;
+  background: var(--panel);
+  padding: 4px 6px;
+}
+.dyn-field label {
+  font-family: var(--fu); font-size: 10px; color: var(--t3);
+  letter-spacing: 0.06em; flex-shrink: 0;
+}
+.dyn-field input {
+  background: transparent; border: none; outline: none;
+  font-family: var(--fm); font-size: 13px; color: var(--t1);
+  width: 56px; caret-color: var(--accent);
+}
+.dyn-field span {
+  font-family: var(--fm); font-size: 11px; color: var(--t3); flex-shrink: 0;
+}
+
 /* ── CONTEXT MENU ── */
 #ctx-menu { position:fixed; display:none; flex-direction:column; background:var(--panel); border:1px solid var(--border-hi); border-radius:5px; box-shadow:0 10px 36px rgba(0,0,0,0.75),0 0 0 1px rgba(0,212,255,0.05); min-width:200px; z-index:500; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch; max-height:calc(100vh - 16px); padding:4px 0; }
 #ctx-menu.open { display:flex; }
@@ -2201,6 +2228,19 @@ body.light-mode .tool-btn.active .tool-icon svg {
     <div id="dyn-input-hint"><b>X,Y</b> abs &nbsp;·&nbsp; <i>@dX,dY</i> rel &nbsp;·&nbsp; <em>@D&lt;A°</em> polar</div>
   </div>
 
+  <div id="dyn-lenang-box" style="display:none;">
+    <div class="dyn-field">
+      <label>LEN</label>
+      <input id="dyn-len-input" type="number" step="0.1" inputmode="decimal" autocomplete="off"/>
+      <span id="dyn-len-unit">mm</span>
+    </div>
+    <div class="dyn-field">
+      <label>ANG</label>
+      <input id="dyn-ang-input" type="number" step="1" inputmode="decimal" autocomplete="off"/>
+      <span>°</span>
+    </div>
+  </div>
+
   <div id="coord-overlay">
     <span><span class="coord-label">X </span><span id="cx">0.0000</span></span>
     <span><span class="coord-label">Y </span><span id="cy">0.0000</span></span>
@@ -2945,6 +2985,13 @@ function toggleUnits() {
     if(unitMode==='in'){ inp.value=(v/MM_PER_IN).toFixed(4); inp.step='0.0625'; if(unitLbl)unitLbl.textContent='in'; }
     else               { inp.value=(v*MM_PER_IN).toFixed(2); inp.step='0.5';    if(unitLbl)unitLbl.textContent='mm'; }
   });
+  // Dynamic length/angle box: its displayed number is always re-derived
+  // from dynBox.lockedLen (stored in canonical mm, unaffected by this
+  // toggle) rather than read back from the field itself, so only the
+  // unit label needs setting here — updateDynBox() redraws the number.
+  const dynLenUnit = document.getElementById('dyn-len-unit');
+  if (dynLenUnit) dynLenUnit.textContent = unitMode;
+  if (typeof updateDynBox==='function' && typeof getDynAnchor==='function') updateDynBox(getDynAnchor());
   updateGridLabel();
   // Update coord overlay unit label
   const coordLbl = document.getElementById('coord-unit-lbl');
@@ -3379,6 +3426,109 @@ function parseDynCoord(str) {
   }
   return null;
 }
+
+// ── DYNAMIC LENGTH/ANGLE (AutoCAD-style dynamic input) ────
+// Two floating fields showing live length+angle from the current anchor
+// while drafting LINE/PLINE/ARC, ray-cast the same way DraftSight/AutoCAD
+// do it. Typing into either LOCKS that dimension — the other keeps
+// tracking the cursor/finger live — same as AutoCAD's dynamic input.
+// Deliberately NOT a rebuild of the deprecated dyn-input above: this
+// never parses free-text coordinate syntax of its own. It only ever
+// adjusts mouseWorld itself, so onMouseDown/runToolAction/drawRubberBand/
+// drawArcPreview all respect it automatically with zero changes to that
+// already-proven code, and committing reuses simulateWorldClick — the
+// exact same path every other input method (click, tap, KOMMAND, voice)
+// already goes through.
+let lastInputWasTouch = false;
+let dynBox = { lenLocked:false, angLocked:false, lockedLen:0, lockedAng:0 };
+
+function getDynAnchor() {
+  if (activeTool==='line' && lineState.active) return { x:lineState.x1, y:lineState.y1 };
+  if (activeTool==='arc'  && arcState.phase===1 && arcState.p1) return arcState.p1;
+  if (activeTool==='arc'  && arcState.phase===2 && arcState.p2) return arcState.p2;
+  return null;
+}
+
+function applyDynLock(anchor) {
+  if (!anchor || (!dynBox.lenLocked && !dynBox.angLocked)) return;
+  const liveDist = Math.hypot(mouseWorld.x-anchor.x, mouseWorld.y-anchor.y);
+  const liveAng  = Math.atan2(mouseWorld.y-anchor.y, mouseWorld.x-anchor.x);
+  const useLen = dynBox.lenLocked ? dynBox.lockedLen : liveDist;
+  const useAng = dynBox.angLocked ? dynBox.lockedAng*Math.PI/180 : liveAng;
+  mouseWorld = { x: anchor.x + useLen*Math.cos(useAng), y: anchor.y + useLen*Math.sin(useAng) };
+}
+
+function updateDynBox(anchor) {
+  const box = document.getElementById('dyn-lenang-box');
+  if (!box) return;
+  if (!anchor) { box.style.display='none'; return; }
+  box.style.display = 'flex';
+
+  const dist = Math.hypot(mouseWorld.x-anchor.x, mouseWorld.y-anchor.y);
+  const ang  = ((Math.atan2(mouseWorld.y-anchor.y, mouseWorld.x-anchor.x)*180/Math.PI)+360)%360;
+
+  const lenInp = document.getElementById('dyn-len-input');
+  const angInp = document.getElementById('dyn-ang-input');
+  if (document.activeElement !== lenInp) {
+    lenInp.value = (dynBox.lenLocked ? toDisplay(dynBox.lockedLen) : toDisplay(dist)).toFixed(2);
+  }
+  if (document.activeElement !== angInp) {
+    angInp.value = (dynBox.angLocked ? dynBox.lockedAng : ang).toFixed(1);
+  }
+
+  // Position near the live point. On touch, offset well clear of the
+  // fingertip that's doing the dragging — on mouse, tuck in close like
+  // DraftSight does, since a pointer doesn't cover what it's pointing at.
+  // Same edge-clamping idea as the old positionDynInput() above.
+  const sp = worldToScreen(mouseWorld.x, mouseWorld.y);
+  const offX = lastInputWasTouch ? -86 : 16;
+  const offY = lastInputWasTouch ? -74 : -16;
+  let bx = sp.x+offX, by = sp.y+offY;
+  const bw = 168, bh = 34;
+  if (bx+bw > canvas.clientWidth)  bx = canvas.clientWidth - bw - 4;
+  if (bx < 4) bx = 4;
+  if (by < 4) by = sp.y + 20;
+  if (by+bh > canvas.clientHeight) by = canvas.clientHeight - bh - 4;
+  box.style.left = bx+'px';
+  box.style.top  = by+'px';
+}
+
+function resetDynBox() {
+  dynBox.lenLocked=false; dynBox.angLocked=false; dynBox.lockedLen=0; dynBox.lockedAng=0;
+  const box = document.getElementById('dyn-lenang-box');
+  if (box) box.style.display = 'none';
+}
+
+function commitDynBox() {
+  const anchor = getDynAnchor();
+  if (!anchor) return;
+  applyDynLock(anchor);
+  simulateWorldClick(mouseWorld.x, mouseWorld.y);
+  resetDynBox();
+}
+
+function dynBoxKeydown(e) {
+  e.stopPropagation();
+  if (e.key === 'Enter') { e.preventDefault(); commitDynBox(); }
+  else if (e.key === 'Escape') { e.preventDefault(); resetDynBox(); this.blur(); }
+}
+
+(function(){
+  const lenInp = document.getElementById('dyn-len-input');
+  const angInp = document.getElementById('dyn-ang-input');
+  lenInp.addEventListener('input', function(){
+    dynBox.lenLocked = true;
+    dynBox.lockedLen = fromDisplay(parseFloat(this.value)||0);
+    const a = getDynAnchor(); applyDynLock(a); updateDynBox(a); render();
+  });
+  angInp.addEventListener('input', function(){
+    dynBox.angLocked = true;
+    dynBox.lockedAng = parseFloat(this.value)||0;
+    const a = getDynAnchor(); applyDynLock(a); updateDynBox(a); render();
+  });
+  lenInp.addEventListener('keydown', dynBoxKeydown);
+  angInp.addEventListener('keydown', dynBoxKeydown);
+})();
 
 // ── OFFSET MATH ─────────────────────────────────────────
 function getOffsetDist() {
@@ -4058,6 +4208,7 @@ function cancelTool() {
   if(typeof extendPreview !== 'undefined') extendPreview = null;
   if(typeof breakState    !== 'undefined') breakState    = {active:false,hit:null,pt1:null};
   if(typeof stretchState  !== 'undefined') stretchState  = {active:false,endpt:null,obj:null,which:null};
+  if(typeof resetDynBox   === 'function') resetDynBox();
   document.getElementById('rect-preview').style.display='none';
 }
 
@@ -4849,6 +5000,7 @@ function onMouseDown(e) {
         // Start a new chain — no GeoMemory write yet, just set state
         lineState = {active:true, x1:wp.x, y1:wp.y};
         lineChain = [{x:wp.x, y:wp.y}];
+        resetDynBox();
         // No addPoint — chain is drawn live by drawRubberBand
       } else {
         // Ignore clicks exactly on the last point
@@ -4857,6 +5009,7 @@ function onMouseDown(e) {
         }
 
         lineChain.push({x:wp.x, y:wp.y});
+        resetDynBox();
 
         // Check if snapping to the chain start — use screen-space distance
         // so the check is consistent with the snap ring threshold
@@ -4924,8 +5077,8 @@ function onMouseDown(e) {
     if(activeTool==='arc') {
       if(dynVisible)return;
       const wp=snapActive&&snapPoint?snapPoint:mouseWorld;
-      if(arcState.phase===0){arcState={active:true,phase:1,p1:{x:wp.x,y:wp.y},p2:null};}
-      else if(arcState.phase===1){arcState.phase=2;arcState.p2={x:wp.x,y:wp.y};}
+      if(arcState.phase===0){arcState={active:true,phase:1,p1:{x:wp.x,y:wp.y},p2:null};resetDynBox();}
+      else if(arcState.phase===1){arcState.phase=2;arcState.p2={x:wp.x,y:wp.y};resetDynBox();}
       else{
         const circ=circumscribedCircle(arcState.p1,arcState.p2,{x:wp.x,y:wp.y});
         if(!circ){showToast('Points collinear — cannot form arc');arcState={active:false,phase:0};render();return;}
@@ -4936,6 +5089,7 @@ function onMouseDown(e) {
         const ccw=angleOnArc(normAngle(midA),normAngle(startA),normAngle(endA),true);
         GeoMemory.addArc(cx,cy,r,startA,endA,ccw);
         showToast('Arc r='+fmtU(r));arcState={active:false,phase:0,p1:null,p2:null};
+        resetDynBox();
       }
       render();return;
     }
@@ -5037,6 +5191,7 @@ function getDrawAnchor() {
   if (activeTool==='rect'    && rectState.active)                 return { x:rectState.x1,  y:rectState.y1  };
   if (activeTool==='polygon' && polyState.active)                 return { x:polyState.cx,  y:polyState.cy  };
   if (activeTool==='circle'  && circleState.active)               return { x:circleState.cx,y:circleState.cy};
+  if (activeTool==='arc'     && arcState.active && arcState.p2)   return arcState.p2;
   if (activeTool==='arc'     && arcState.active && arcState.p1)   return arcState.p1;
   return null;
 }
@@ -5077,6 +5232,13 @@ function onMouseMove(e) {
     shiftLockActive = true;
     shiftLockAngle  = locked;
   }
+
+  // Dynamic length/angle — isTrusted distinguishes a real mousemove from
+  // the swipe gesture's synthetic fakeMouseEvent() calls, for free.
+  lastInputWasTouch = !e.isTrusted;
+  const dynAnchor = getDynAnchor();
+  applyDynLock(dynAnchor);
+  updateDynBox(dynAnchor);
 
   document.getElementById('cx').textContent=fmtCoord(mouseWorld.x);
   document.getElementById('cy').textContent=fmtCoord(mouseWorld.y);
@@ -6371,14 +6533,10 @@ function drawRubberBand() {
   ctx.stroke();
   ctx.setLineDash([]);
 
-  // Angle lock annotation
-  if (shiftLockActive) {
-    const deg = ((Math.round(shiftLockAngle*180/Math.PI)%360)+360)%360;
-    ctx.font = '9px JetBrains Mono,monospace';
-    ctx.fillStyle = draftLeadingColor();
-    ctx.globalAlpha = 0.85;
-    ctx.fillText('∠'+deg+'°', end.x+10, end.y-6);
-  }
+  // Angle-lock snapping still adjusts mouseWorld itself (see onMouseMove),
+  // so the rubber-band above already reflects it — the dynamic length/
+  // angle box shows the resulting number, superseding the small text
+  // label this used to draw here.
 
   // ── Start point ring ──
   const chainStart = worldToScreen(lineChain[0].x, lineChain[0].y);
@@ -8664,23 +8822,13 @@ async function toggleVoiceListening() {
 
   const r = getVoiceRecognition();
   if (!r) { showToast('Voice input needs Chrome or Edge — not supported in this browser'); return; }
-
-  // Explicit getUserMedia pre-flight. SpeechRecognition is supposed to
-  // prompt for mic access on its own, but that implicit path is where
-  // most cross-browser inconsistency lives. Asking directly gets one
-  // well-tested permission prompt and, critically, a real named error if
-  // access is denied, missing, or already in use — instead of finding
-  // out only when SpeechRecognition fails later with a vaguer code.
-  // Skips cleanly if the API isn't present rather than blocking on it.
-  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach(t => t.stop()); // just proving access — SpeechRecognition captures its own audio
-    } catch (e) {
-      kecho('🎤 ' + (voiceErrorMessage(e.name) || ('Voice error: ' + e.name)), 'err');
-      return;
-    }
-  }
+  // No getUserMedia pre-flight here on purpose: grabbing the mic and
+  // immediately stopping it, right before SpeechRecognition tries to grab
+  // it again, raced with the OS audio session releasing on some mobile
+  // devices — start() would still report success (onstart fires) but
+  // never receive real audio, so onresult would never fire either.
+  // r.onerror below already covers denied/missing-mic cases via the
+  // standard SpeechRecognition error codes.
 
   let finalTranscript = '';
   const btn = document.getElementById('voice-btn');
