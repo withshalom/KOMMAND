@@ -3495,6 +3495,17 @@ function updateDynBox(anchor) {
 
 function resetDynBox() {
   dynBox.lenLocked=false; dynBox.angLocked=false; dynBox.lockedLen=0; dynBox.lockedAng=0;
+  // Explicitly clear focus if it's on either field — otherwise it can be
+  // silently retained across display:none, so the *next* segment starts
+  // already-focused on whichever field was last used (usually angle,
+  // since Enter is commonly pressed from there), making Tab unable to
+  // reach length at all on continuations. This is what made the second
+  // and later points in a chain behave differently from the first.
+  const lenInp = document.getElementById('dyn-len-input');
+  const angInp = document.getElementById('dyn-ang-input');
+  if (document.activeElement === lenInp || document.activeElement === angInp) {
+    document.activeElement.blur();
+  }
   const box = document.getElementById('dyn-lenang-box');
   if (box) box.style.display = 'none';
 }
@@ -3511,6 +3522,18 @@ function dynBoxKeydown(e) {
   e.stopPropagation();
   if (e.key === 'Enter') { e.preventDefault(); commitDynBox(); }
   else if (e.key === 'Escape') { e.preventDefault(); resetDynBox(); this.blur(); }
+  else if (e.key === 'Tab') {
+    // Deliberate, explicit length<->angle cycle instead of native DOM tab
+    // order, which was landing inconsistently once focus could be
+    // retained from a prior commit (see resetDynBox above). Tab never
+    // commits here — only Enter (here) or GO/Enter in KOMMAND do.
+    e.preventDefault();
+    const lenInp = document.getElementById('dyn-len-input');
+    const angInp = document.getElementById('dyn-ang-input');
+    const target = (this === lenInp) ? angInp : lenInp;
+    target.focus();
+    target.select();
+  }
 }
 
 (function(){
@@ -8892,13 +8915,33 @@ kInput.addEventListener('keydown', function(e) {
     return;
   }
 
-  if (e.key === 'Enter' || e.key === 'Tab') {
+  if (e.key === 'Enter') {
     e.preventDefault();
     if (!kInput.value.trim()) {
       // Empty bar — Enter means "finish the current draw," same as it
       // does on the canvas. submitKommandText() would just no-op on
       // empty input, which is the bug this fixes: Enter in KOMMAND
       // used to only ever mean "submit typed text," never "commit."
+      commitInProgressDraw();
+      return;
+    }
+    submitKommandText(kInput.value);
+    return;
+  }
+
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    // Tab used to be treated identically to Enter here (submit/commit).
+    // That's fine when nothing is being drafted, but once the length/
+    // angle box is in play, a Tab that lands back in KOMMAND — from
+    // anywhere — must not commit; only Enter/GO do that. Length is
+    // always the field Tab should reach first, on every segment.
+    const dynAnchor = (typeof getDynAnchor === 'function') ? getDynAnchor() : null;
+    if (dynAnchor) {
+      const lenInp = document.getElementById('dyn-len-input');
+      if (lenInp) { lenInp.focus(); lenInp.select(); return; }
+    }
+    if (!kInput.value.trim()) {
       commitInProgressDraw();
       return;
     }
