@@ -3539,6 +3539,15 @@ function dynBoxKeydown(e) {
 (function(){
   const lenInp = document.getElementById('dyn-len-input');
   const angInp = document.getElementById('dyn-ang-input');
+  // Select-on-focus — Tab already calls .select() when it moves focus
+  // here, but tapping/clicking directly into the field didn't, so typing
+  // inserted at the tap point instead of replacing the live value. A
+  // setTimeout(0) sidesteps a common mobile-Safari/Chrome race where
+  // .select() called synchronously in the focus handler gets overridden
+  // by the browser's own default cursor placement a tick later.
+  const selectSoon = function(){ const el=this; setTimeout(()=>el.select(), 0); };
+  lenInp.addEventListener('focus', selectSoon);
+  angInp.addEventListener('focus', selectSoon);
   lenInp.addEventListener('input', function(){
     dynBox.lenLocked = true;
     dynBox.lockedLen = fromDisplay(parseFloat(this.value)||0);
@@ -4809,7 +4818,9 @@ function submitKommandFromButton() {
   // submitKommandText() directly too, so this makes all three entry
   // points — typed+Enter, typed+GO, voice — go through identical logic.
   if (!val.trim()) {
-    commitInProgressDraw();
+    // An active length/angle draft (typed or live) takes priority over
+    // ending the whole line — see commitDynBoxOrFinishDraw's own comment.
+    commitDynBoxOrFinishDraw();
     return;
   }
   submitKommandText(val);
@@ -5440,6 +5451,20 @@ function commitInProgressDraw() {
     render(); return true;
   }
   return false;
+}
+
+// Shared by GO and KOMMAND's own Enter key: when the length/angle box has
+// a valid anchor (a line/arc segment is actively being aimed), that's a
+// distinct, more common action than "finish the whole draw" — placing
+// the next point should win. commitInProgressDraw() below is for
+// genuinely idle state: nothing being actively aimed, KOMMAND empty.
+// This is why GO isn't just an Enter copy — a touch-first "make it
+// happen" button needs this check first, since there's no keyboard Tab
+// path bringing focus back to KOMMAND the way there is on desktop.
+function commitDynBoxOrFinishDraw() {
+  const anchor = (typeof getDynAnchor === 'function') ? getDynAnchor() : null;
+  if (anchor) { commitDynBox(); return; }
+  commitInProgressDraw();
 }
 
 function onKeyDown(e) {
@@ -8918,11 +8943,13 @@ kInput.addEventListener('keydown', function(e) {
   if (e.key === 'Enter') {
     e.preventDefault();
     if (!kInput.value.trim()) {
-      // Empty bar — Enter means "finish the current draw," same as it
-      // does on the canvas. submitKommandText() would just no-op on
-      // empty input, which is the bug this fixes: Enter in KOMMAND
-      // used to only ever mean "submit typed text," never "commit."
-      commitInProgressDraw();
+      // Empty bar — Enter means "commit the active length/angle draft if
+      // there is one, else finish the current draw," same priority GO
+      // uses (see commitDynBoxOrFinishDraw). submitKommandText() would
+      // just no-op on empty input, which is the bug this originally
+      // fixed: Enter in KOMMAND used to only ever mean "submit typed
+      // text," never "commit" anything at all.
+      commitDynBoxOrFinishDraw();
       return;
     }
     submitKommandText(kInput.value);
