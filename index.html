@@ -287,7 +287,6 @@ html, body { width:100%; height:100%; overflow:hidden; box-sizing:border-box; ba
 
 
 /* ── DYNAMIC INPUT ── */
-#dyn-input-wrap { display:none !important; pointer-events:none !important; visibility:hidden !important; }
 
 
 
@@ -727,18 +726,21 @@ body.drafting-mode #app { pointer-events:auto; z-index:20; }
 #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
 
 /* ── DYNAMIC INPUT ── */
-#dyn-input-wrap { position:absolute; display:none; z-index:80; pointer-events:auto; }
-#dyn-input-box { background:var(--panel); border:1px solid var(--accent); border-radius:3px; box-shadow:0 0 12px rgba(0,212,255,0.3),0 2px 8px rgba(0,0,0,0.7); display:flex; align-items:center; min-width:170px; overflow:hidden; }
-#dyn-input-prefix { background:var(--panel2); border-right:1px solid var(--border); padding:5px 7px; font-family:var(--fm); font-size:12px; color:var(--accent); letter-spacing:0.05em; white-space:nowrap; flex-shrink:0; min-width:42px; text-align:center; }
-#dyn-input-field { background:transparent; border:none; outline:none; padding:5px 8px; font-family:var(--fm); font-size:13px; color:var(--t1); width:130px; caret-color:var(--accent); }
-#dyn-input-field::placeholder { color:var(--t3); }
-#dyn-input-hint { position:absolute; top:calc(100% + 4px); left:0; background:rgba(8,10,14,0.95); border:1px solid var(--border); border-radius:3px; padding:3px 8px; font-family:var(--fm); font-size:12px; color:var(--t3); white-space:nowrap; pointer-events:none; }
-#dyn-input-hint b { color:var(--accent); }
-#dyn-input-hint i { color:var(--amber); font-style:normal; }
-#dyn-input-hint em { color:var(--green); font-style:normal; }
 
 #dyn-lenang-box {
-  position: absolute; z-index: 81; pointer-events: auto;
+  position: absolute; z-index: 81;
+  /* Deliberately NOT auto: this box follows the live cursor/stylus
+     position, so it's very likely to end up sitting directly on top of
+     wherever you're currently aiming. As a separate DOM element layered
+     above the canvas, pointer-events:auto here would swallow hover
+     events meant for the canvas's own mousemove listener underneath —
+     the rubber-band/dyn-box live update would silently stop the moment
+     the pointer crossed into the box's footprint. Only the two actual
+     inputs (see .dyn-field input below) need to stay interactive; the
+     background, padding, and labels should let hover pass straight
+     through to the canvas.
+  */
+  pointer-events: none;
   display: flex; gap: 1px;
   background: var(--border);
   border: 1px solid var(--accent);
@@ -756,6 +758,7 @@ body.drafting-mode #app { pointer-events:auto; z-index:20; }
   letter-spacing: 0.06em; flex-shrink: 0;
 }
 .dyn-field input {
+  pointer-events: auto; /* the one thing in this box that should intercept — see #dyn-lenang-box */
   background: transparent; border: none; outline: none;
   font-family: var(--fm); font-size: 13px; color: var(--t1);
   width: 56px; caret-color: var(--accent);
@@ -2220,14 +2223,6 @@ body.light-mode .tool-btn.active .tool-icon svg {
   <div id="rect-preview"></div>
 
   <!-- Dynamic Coordinate Input -->
-  <div id="dyn-input-wrap">
-    <div id="dyn-input-box">
-      <div id="dyn-input-prefix">ABS</div>
-      <input id="dyn-input-field" type="text" spellcheck="false" autocomplete="off" placeholder="X,Y  @dX,dY  @D&lt;A"/>
-    </div>
-    <div id="dyn-input-hint"><b>X,Y</b> abs &nbsp;·&nbsp; <i>@dX,dY</i> rel &nbsp;·&nbsp; <em>@D&lt;A°</em> polar</div>
-  </div>
-
   <div id="dyn-lenang-box" style="display:none;">
     <div class="dyn-field">
       <label>LEN</label>
@@ -2245,6 +2240,7 @@ body.light-mode .tool-btn.active .tool-icon svg {
     <span><span class="coord-label">X </span><span id="cx">0.0000</span></span>
     <span><span class="coord-label">Y </span><span id="cy">0.0000</span></span>
     <span class="coord-label" id="coord-unit-lbl">mm</span>
+    <span id="hover-src" style="color:var(--green);font-size:11px;"></span>
   </div>
   <div id="hint">Press <span>L</span> Line · <span>A</span> Arc · <span>C</span> Circle · <span>R</span> Rect · <span>P</span> Poly · <span>F</span> Fillet · Right-click</div>
 </div>
@@ -3335,104 +3331,12 @@ function toggleSnap() {
   showToast('Snap '+(snapEnabled?'enabled':'disabled'));
 }
 
-// ── DYNAMIC INPUT ────────────────────────────────────────
-const dynWrap   = document.getElementById('dyn-input-wrap');
-const dynField  = document.getElementById('dyn-input-field');
-const dynPrefix = document.getElementById('dyn-input-prefix');
-let dynVisible  = false;
-
-function openDynInput(seed) {
-  // DEPRECATED: old floating coordinate input. Use KOMMAND bar instead.
-  // This function is here only to prevent errors if old code tries to call it.
-}
-function closeDynInput() {
-  // DEPRECATED: old floating coordinate input. Use KOMMAND bar instead.
-}
-function positionDynInput() {
-  let sx = mouseScreen.x + 18, sy = mouseScreen.y + 22;
-  if(sx+190>canvas.clientWidth)  sx = mouseScreen.x - 190;
-  if(sy+72>canvas.clientHeight)  sy = mouseScreen.y - 72;
-  dynWrap.style.left = sx+'px';
-  dynWrap.style.top  = sy+'px';
-}
-function updateDynPrefix() {
-  const v = dynField.value;
-  if(v.startsWith('@')&&v.includes('<')){ dynPrefix.textContent='POLAR'; dynPrefix.style.color='var(--green)'; }
-  else if(v.startsWith('@'))             { dynPrefix.textContent='REL';   dynPrefix.style.color='var(--amber)'; }
-  else                                   { dynPrefix.textContent='ABS';   dynPrefix.style.color='var(--accent)'; }
-}
-
-dynField.addEventListener('input', updateDynPrefix);
-dynField.addEventListener('keydown', e=>{
-  if(e.key==='Enter'){ e.stopPropagation(); commitDynInput(); }
-  if(e.key==='Escape'){ e.stopPropagation(); closeDynInput(); cancelTool(); render(); }
-});
-
-function commitDynInput() {
-  const raw = dynField.value.trim();
-  closeDynInput();
-  if(!raw) return;
-  const pt = parseDynCoord(raw);
-  if(!pt){ showToast('Bad coordinate: '+raw); return; }
-
-  if(activeTool==='line') {
-    if(!lineState.active){
-      lineState={active:true, x1:pt.x, y1:pt.y};
-      lineChain=[{x:pt.x, y:pt.y}];
-    } else {
-      lineChain.push({x:pt.x, y:pt.y});
-      const start=lineChain[0];
-      const snapToStart = lineChain.length>=3 &&
-        Math.hypot(pt.x-start.x, pt.y-start.y)<1e-4;
-      if(snapToStart){
-        lineChain.pop();
-        commitLineChain(true);
-      } else if(lineMode==='single' && lineChain.length>=2){
-        commitLineChain(false); // LINE mode: each segment commits on its second point
-      } else {
-        lineState={active:true, x1:pt.x, y1:pt.y};
-      }
-    }
-  }
-  render();
-}
-
-function parseDynCoord(str) {
-  str=str.trim();
-  const relBase = lineState.active ? {x:lineState.x1,y:lineState.y1} : {x:0,y:0};
-
-  // @dist<angle  polar relative — from last point
-  let m = str.match(/^@([+\-]?[\d.eE]+)<([+\-]?[\d.eE]+)$/);
-  if(m){
-    const d=fromDisplay(parseFloat(m[1])), a=parseFloat(m[2])*Math.PI/180;
-    if(isNaN(d)||isNaN(a)) return null;
-    return { x:parseFloat((relBase.x+d*Math.cos(a)).toFixed(6)),
-             y:parseFloat((relBase.y+d*Math.sin(a)).toFixed(6)) };
-  }
-  // @dx,dy  relative — from last point
-  m = str.match(/^@([+\-]?[\d.eE]+)[, ]([+\-]?[\d.eE]+)$/);
-  if(m){
-    const dx=fromDisplay(parseFloat(m[1])), dy=fromDisplay(parseFloat(m[2]));
-    if(isNaN(dx)||isNaN(dy)) return null;
-    return { x:parseFloat((relBase.x+dx).toFixed(6)),
-             y:parseFloat((relBase.y+dy).toFixed(6)) };
-  }
-  // x,y  absolute — always from world origin (0,0)
-  m = str.match(/^([+\-]?[\d.eE]+)[, ]([+\-]?[\d.eE]+)$/);
-  if(m){
-    const x=fromDisplay(parseFloat(m[1])), y=fromDisplay(parseFloat(m[2]));
-    if(isNaN(x)||isNaN(y)) return null;
-    return { x:parseFloat(x.toFixed(6)), y:parseFloat(y.toFixed(6)) };
-  }
-  return null;
-}
-
 // ── DYNAMIC LENGTH/ANGLE (AutoCAD-style dynamic input) ────
 // Two floating fields showing live length+angle from the current anchor
 // while drafting LINE/PLINE/ARC, ray-cast the same way DraftSight/AutoCAD
 // do it. Typing into either LOCKS that dimension — the other keeps
 // tracking the cursor/finger live — same as AutoCAD's dynamic input.
-// Deliberately NOT a rebuild of the deprecated dyn-input above: this
+// Deliberately NOT a rebuild of the old floating dyn-input (removed): this
 // never parses free-text coordinate syntax of its own. It only ever
 // adjusts mouseWorld itself, so onMouseDown/runToolAction/drawRubberBand/
 // drawArcPreview all respect it automatically with zero changes to that
@@ -3479,7 +3383,7 @@ function updateDynBox(anchor) {
   // Position near the live point. On touch, offset well clear of the
   // fingertip that's doing the dragging — on mouse, tuck in close like
   // DraftSight does, since a pointer doesn't cover what it's pointing at.
-  // Same edge-clamping idea as the old positionDynInput() above.
+  // Same edge-clamping idea the removed floating dyn-input used.
   const sp = worldToScreen(mouseWorld.x, mouseWorld.y);
   const offX = lastInputWasTouch ? -86 : 16;
   const offY = lastInputWasTouch ? -74 : -16;
@@ -4246,7 +4150,7 @@ function cancelTool() {
 
 function setTool(tool) {
   cancelTool();
-  closeDynInput();
+  kommandClear();
   closeCtxMenu();
 
   // PLINE is the line machinery in chain mode; LINE is single-segment
@@ -4589,8 +4493,97 @@ function drawSelBox() {
 
 // ── MOUSE EVENTS ────────────────────────────────────────
 canvas.addEventListener('mousedown',  onMouseDown);
-canvas.addEventListener('mouseleave', () => { cursorSeen = false; render(); });
+canvas.addEventListener('mouseleave', () => { cursorSeen = false; liveAim = false; render(); });
+// Releasing touch or the pen leaving hover range ends active aiming —
+// the leading rubber segment hides rather than freezing where it was.
+canvas.addEventListener('touchend',    () => { liveAim = false; render(); }, {passive:true});
+canvas.addEventListener('touchcancel', () => { liveAim = false; render(); }, {passive:true});
+canvas.addEventListener('pointerleave', (e) => {
+  if (e.pointerType !== 'mouse') { liveAim = false; render(); } // mouse handled by mouseleave above
+}, {passive:true});
 canvas.addEventListener('mousemove',  onMouseMove);
+
+// ── HOVER SENSE: multi-channel stylus hover detection ─────────────────
+// Stylus hover-without-contact reached this app through an unwritten
+// browser behavior we never explicitly subscribed to — it worked, then
+// stopped, and no single-channel fix brought it back. So instead of
+// betting on one delivery mechanism, listen on EVERY channel hover could
+// plausibly arrive through, feed them all into one deduplicated entry
+// point, and label which channel delivered. The #hover-src badge in the
+// coord overlay shows the winning channel's tag live on-device:
+//   ptr  = canvas-level PointerEvent (pointermove/pointerover)
+//   raw  = canvas-level pointerrawupdate (higher-frequency raw channel,
+//          fires for hover on some builds where pointermove doesn't)
+//   net  = window-level capture net — the event fired but got hit-tested
+//          onto some OTHER element (overlay, scrim, the dyn box's own
+//          inputs), so canvas listeners never saw it
+//   mnet = same net, but for synthesized mouse events with no pointerType
+// Whatever the device actually uses, we catch it — and learn which it was.
+const hoverSense = { lastX:0, lastY:0, lastT:0, counts:{} };
+function feedHover(x, y, src) {
+  const now = performance.now();
+  // ~120Hz cap + identical-position dedupe: window capture and canvas
+  // listeners can both see the same physical event; rawupdate can fire
+  // at 240Hz. One render per meaningful movement is plenty.
+  if (now - hoverSense.lastT < 8 && Math.abs(x - hoverSense.lastX) < 1 && Math.abs(y - hoverSense.lastY) < 1) return;
+  hoverSense.lastX = x; hoverSense.lastY = y; hoverSense.lastT = now;
+  hoverSense.counts[src] = (hoverSense.counts[src] || 0) + 1;
+  const badge = document.getElementById('hover-src');
+  if (badge) badge.textContent = src;
+  onMouseMove(fakeMouseEvent(x, y));
+}
+
+// Channel A: canvas-level Pointer Events. Excludes only what's already
+// definitely handled elsewhere (mouse has its own listener above; touch
+// goes through the swipe gesture) rather than requiring an exact 'pen'
+// match — pointerType reporting for stylus input isn't consistent across
+// browser/OS builds, and '' (unknown) must pass through.
+function canvasPointerHover(e) {
+  if (e.pointerType === 'mouse' || e.pointerType === 'touch') return;
+  feedHover(e.clientX, e.clientY, e.type === 'pointerrawupdate' ? 'raw' : 'ptr');
+}
+canvas.addEventListener('pointermove', canvasPointerHover, {passive:true});
+canvas.addEventListener('pointerover', canvasPointerHover, {passive:true});
+// Channel B: pointerrawupdate — feature-detected; a separate, less
+// coalesced delivery path that some builds use for hover specifically.
+if ('onpointerrawupdate' in window) {
+  canvas.addEventListener('pointerrawupdate', canvasPointerHover, {passive:true});
+}
+
+// Channels C/D: window-level capture net. If hover events fire but get
+// hit-tested onto something other than the canvas — an overlay, the dyn
+// box's inputs (which deliberately keep pointer-events:auto and sit
+// exactly at the pen position), anything — canvas listeners never hear
+// about them. Capture phase at the window sees everything first.
+function windowHoverNet(e) {
+  if (e.pointerType === 'mouse' || e.pointerType === 'touch') return;
+  if (e.target === canvas) return; // canvas channels already got this one
+  const t = e.target;
+  // The dyn box's own inputs track the pen position — hover landing on
+  // them IS a valid position signal (this is the "worked by accident"
+  // theory made deliberate). All other UI stays excluded.
+  const isDynField = t && (t.id === 'dyn-len-input' || t.id === 'dyn-ang-input');
+  if (!isDynField) {
+    if (t && t.closest && t.closest('#sidebar, #kommand-bar, input, button, select, textarea, a')) return;
+    const wrap = document.getElementById('canvas-wrap');
+    const inWrap = wrap && t && wrap.contains(t);
+    if (!inWrap && t !== document.body && t !== document.documentElement) return;
+  }
+  const r = canvas.getBoundingClientRect();
+  if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return;
+  feedHover(e.clientX, e.clientY, ('pointerType' in e) ? 'net' : 'mnet');
+}
+window.addEventListener('pointermove', windowHoverNet, {capture:true, passive:true});
+window.addEventListener('pointerover', windowHoverNet, {capture:true, passive:true});
+if ('onpointerrawupdate' in window) {
+  window.addEventListener('pointerrawupdate', windowHoverNet, {capture:true, passive:true});
+}
+// Mouse-event net: synthesized hover mousemove with no pointerType at
+// all, dispatched at some non-canvas target. Desktop's real mouse over
+// the canvas itself skips (target === canvas → the direct listener wins).
+window.addEventListener('mousemove', windowHoverNet, {capture:true, passive:true});
+window.addEventListener('mouseover', windowHoverNet, {capture:true, passive:true});
+
 canvas.addEventListener('mouseup',    onMouseUp);
 canvas.addEventListener('wheel',      onWheel, {passive:false});
 
@@ -4888,7 +4881,6 @@ function deleteFabTap() {
 }
 function escFabTap() {
   kommandClear();
-  closeDynInput();
   if (activeTool !== 'select') cancelTool();
   else selectedIds.clear();
   updateSelectionProps();
@@ -5029,7 +5021,6 @@ function onMouseDown(e) {
     const runToolAction = () => {
 
     if(activeTool==='line') {
-      if(dynVisible) return;
       if(!lineState.active){
         // Start a new chain — no GeoMemory write yet, just set state
         lineState = {active:true, x1:wp.x, y1:wp.y};
@@ -5066,7 +5057,6 @@ function onMouseDown(e) {
     }
 
     if(activeTool==='rect') {
-      if(dynVisible) return;
       if(!rectState.active){
         rectState={active:true, x1:wp.x, y1:wp.y};
         document.getElementById('rect-preview').style.display='none';
@@ -5109,7 +5099,6 @@ function onMouseDown(e) {
     }
 
     if(activeTool==='arc') {
-      if(dynVisible)return;
       const wp=snapActive&&snapPoint?snapPoint:mouseWorld;
       if(arcState.phase===0){arcState={active:true,phase:1,p1:{x:wp.x,y:wp.y},p2:null};resetDynBox();}
       else if(arcState.phase===1){arcState.phase=2;arcState.p2={x:wp.x,y:wp.y};resetDynBox();}
@@ -5129,7 +5118,6 @@ function onMouseDown(e) {
     }
 
     if(activeTool==='circle') {
-      if(dynVisible)return;
       const wp=snapActive&&snapPoint?snapPoint:mouseWorld;
       if(!circleState.active){
         circleState={active:true,cx:wp.x,cy:wp.y};
@@ -5245,6 +5233,7 @@ function onMouseMove(e) {
   const rect=canvas.getBoundingClientRect();
   mouseScreen={x:e.clientX-rect.left, y:e.clientY-rect.top};
   cursorSeen=true;
+  liveAim=true;
   const raw=screenToWorld(mouseScreen.x,mouseScreen.y);
   const snap=findSnap(raw.x,raw.y);
   snapActive=!!snap; snapPoint=snap;
@@ -5468,13 +5457,12 @@ function commitDynBoxOrFinishDraw() {
 }
 
 function onKeyDown(e) {
-  if(document.activeElement===dynField) return;
   if(document.activeElement.tagName==='INPUT') return;
   if(document.activeElement===kInput) return; // KOMMAND has focus
 
   const k=e.key;
   if(k==='Escape'){
-    closeDynInput();
+    kommandClear();
     if(activeTool!=='select') cancelTool();
     else selectedIds.clear();
     updateSelectionProps();
@@ -6339,6 +6327,13 @@ function render() {
 // cursorSeen gates it so it never renders at (0,0) before first input,
 // and hides when the mouse leaves the canvas.
 let cursorSeen = false;
+// True only while input is actively driving the aim point — any
+// onMouseMove from any source (real mouse, pen hover, swipe injection)
+// sets it; releasing touch, the pen leaving hover range, or the mouse
+// leaving the canvas clears it. drawRubberBand gates the leading dashed
+// segment on this, so the cast ray lives only while being aimed instead
+// of freezing at its last position after release.
+let liveAim = false;
 function drawCursorCrosshair() {
   if(!cursorSeen || isPanning) return;
   const W=canvas.clientWidth, H=canvas.clientHeight;
@@ -6567,19 +6562,25 @@ function drawRubberBand() {
   }
 
   // ── Rubber band line from last point to cursor ──
-  const ep  = snapActive&&snapPoint ? snapPoint : mouseWorld;
-  const end = worldToScreen(ep.x, ep.y);
-  const start = worldToScreen(lineState.x1, lineState.y1);
+  // Only while input is live (hover, mouse move, touch/pen drag). On
+  // release the leading segment disappears rather than freezing at the
+  // last aimed position — the cast ray is an aiming aid, not drawing
+  // state; the committed chain above stays, the aim beam doesn't.
+  if (liveAim) {
+    const ep  = snapActive&&snapPoint ? snapPoint : mouseWorld;
+    const end = worldToScreen(ep.x, ep.y);
+    const start = worldToScreen(lineState.x1, lineState.y1);
 
-  ctx.setLineDash([5,4]);
-  ctx.strokeStyle = draftLeadingColor();
-  ctx.lineWidth   = 2.2;
-  ctx.globalAlpha = 0.85;
-  ctx.beginPath();
-  ctx.moveTo(start.x, start.y);
-  ctx.lineTo(end.x, end.y);
-  ctx.stroke();
-  ctx.setLineDash([]);
+    ctx.setLineDash([5,4]);
+    ctx.strokeStyle = draftLeadingColor();
+    ctx.lineWidth   = 2.2;
+    ctx.globalAlpha = 0.85;
+    ctx.beginPath();
+    ctx.moveTo(start.x, start.y);
+    ctx.lineTo(end.x, end.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
 
   // Angle-lock snapping still adjusts mouseWorld itself (see onMouseMove),
   // so the rubber-band above already reflects it — the dynamic length/
@@ -6596,7 +6597,8 @@ function drawRubberBand() {
   ctx.stroke();
 
   // ── Closing indicator: if cursor is near chain start, highlight it ──
-  if(lineChain.length >= 2) {
+  if(liveAim && lineChain.length >= 2) {
+    const ep  = snapActive&&snapPoint ? snapPoint : mouseWorld;
     const startScreen = worldToScreen(lineChain[0].x, lineChain[0].y);
     const endScreen   = worldToScreen(ep.x, ep.y);
     const screenDist  = Math.hypot(endScreen.x - startScreen.x, endScreen.y - startScreen.y);
@@ -9143,16 +9145,6 @@ kInput.addEventListener('blur', () => {
   kommandClear();
 });
 
-// Override showDynInput to echo to kommand line instead of popup
-function showDynInput(seed) {
-  if (kInput) {
-    kInput.value = seed || '';
-    kInput.focus();
-    kInput.select();
-  }
-}
-function closeDynInput() { kommandClear(); }
-function positionDynInput() { /* no-op — kommand is fixed */ }
 
 // Context label sync happens exclusively through the patched setTool —
 // the boot init calls setTool('pline') two frames after load, so a
