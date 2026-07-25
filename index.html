@@ -673,6 +673,17 @@ body.drafting-mode #app { pointer-events:auto; z-index:20; }
 .prop-val.green  { color:var(--green); }
 .layer-row { display:flex; align-items:center; gap:8px; padding:4px 8px; cursor:pointer; border-radius:3px; margin-bottom:2px; }
 .layer-row:hover { background:var(--hover); }
+/* The active layer had NO styling — the class was applied but never
+   defined, so the layer you were drawing on looked identical to every
+   other row. Accent bar + glow + bold name make it unmistakable. */
+.layer-row.active { background:var(--accent-glow); box-shadow:inset 3px 0 0 var(--accent); }
+.layer-row.active .layer-name { color:var(--accent); font-weight:600; }
+.layer-hint { font-family:var(--fu); font-size:9px; color:var(--t3); letter-spacing:0.06em; text-transform:none; opacity:0.8; }
+/* Always-visible reminder of the drawing layer, for when the sidebar is
+   closed (which it is by default on mobile). Tapping it opens the panel. */
+#draw-layer-chip { pointer-events:auto; cursor:pointer; font-family:var(--fu); font-size:11px;
+  letter-spacing:0.08em; padding:1px 6px; border-radius:3px; border:1px solid currentColor; opacity:0.9; }
+#draw-layer-chip:hover { opacity:1; }
 .layer-name { font-size:13px; font-family:var(--fu); color:var(--t2); flex:1; }
 .layer-row { flex-wrap:wrap; }
 .layer-color { width:16px; height:16px; padding:0; border:1px solid var(--border-hi); border-radius:3px; background:none; cursor:pointer; flex-shrink:0; }
@@ -2000,7 +2011,7 @@ body.light-mode .tool-btn.active .tool-icon svg {
   <!-- ── LAYERS ────────────────────────────────────────────────────── -->
   <div id="layer-panel">
     <div class="section-head" style="display:flex;align-items:center;justify-content:space-between;padding-right:8px;">
-      <span>LAYERS</span>
+      <span>LAYERS <span class="layer-hint">tap to draw on</span></span>
       <span id="active-layer-indicator" style="color:var(--accent);font-size:11px;">SOLID</span>
     </div>
     <div id="layer-list"></div>
@@ -2253,6 +2264,7 @@ body.light-mode .tool-btn.active .tool-icon svg {
     <span><span class="coord-label">X </span><span id="cx">0.0000</span></span>
     <span><span class="coord-label">Y </span><span id="cy">0.0000</span></span>
     <span class="coord-label" id="coord-unit-lbl">mm</span>
+    <span id="draw-layer-chip" title="Drawing layer — tap to change" onclick="focusLayerPanel()">SOLID</span>
     <span id="hover-src" style="color:var(--green);font-size:11px;"></span>
   </div>
   <div id="hint">Press <span>L</span> Line · <span>A</span> Arc · <span>C</span> Circle · <span>R</span> Rect · <span>P</span> Poly · <span>F</span> Fillet · Right-click</div>
@@ -6192,7 +6204,33 @@ function setActiveLayer(name) {
     indicator.textContent = lay.name;
     indicator.style.color = lay.color;
   }
-  showToast('Layer: ' + lay.name);
+  updateDrawLayerChip();
+  showToast('Drawing on layer: ' + lay.name);
+}
+
+// Mirrors the active layer onto the canvas overlay, so the drawing layer
+// is visible even with the sidebar closed — which is the default on
+// mobile, where the layer panel is otherwise entirely out of sight.
+function updateDrawLayerChip() {
+  const chip = document.getElementById('draw-layer-chip');
+  if (!chip) return;
+  const lay = getLayer(activeLayer);
+  chip.textContent = lay.name;
+  chip.style.color = lay.color;
+}
+
+// Tapping the chip reveals the layer panel — on mobile that means opening
+// the sidebar drawer first, otherwise the panel is already on screen.
+function focusLayerPanel() {
+  if (document.body.classList.contains('mobile-mode')) toggleMobileSidebar(true);
+  const panel = document.getElementById('layer-panel');
+  if (panel) {
+    panel.scrollIntoView({block:'nearest', behavior:'smooth'});
+    panel.animate(
+      [{boxShadow:'0 0 0 0 var(--accent)'}, {boxShadow:'0 0 0 3px var(--accent)'}, {boxShadow:'0 0 0 0 var(--accent)'}],
+      {duration:700}
+    );
+  }
 }
 
 function addCustomLayer() {
@@ -6249,6 +6287,7 @@ function buildLayerPanel() {
     row.onclick = () => setActiveLayer(key);
     panel.appendChild(row);
   }
+  updateDrawLayerChip();
 }
 
 // ── Layer property editors ────────────────────────────────────────────
@@ -6259,6 +6298,7 @@ function setLayerColor(key, hex) {
   LAYERS[key].color = hex;
   const ind = document.getElementById('active-layer-indicator');
   if (key === activeLayer && ind) ind.style.color = hex;
+  updateDrawLayerChip();
   render();
 }
 function setLayerLtype(key, lt) {
