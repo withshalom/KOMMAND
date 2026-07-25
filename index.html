@@ -674,6 +674,19 @@ body.drafting-mode #app { pointer-events:auto; z-index:20; }
 .layer-row { display:flex; align-items:center; gap:8px; padding:4px 8px; cursor:pointer; border-radius:3px; margin-bottom:2px; }
 .layer-row:hover { background:var(--hover); }
 .layer-name { font-size:13px; font-family:var(--fu); color:var(--t2); flex:1; }
+.layer-row { flex-wrap:wrap; }
+.layer-color { width:16px; height:16px; padding:0; border:1px solid var(--border-hi); border-radius:3px; background:none; cursor:pointer; flex-shrink:0; }
+.layer-color::-webkit-color-swatch-wrapper { padding:0; }
+.layer-color::-webkit-color-swatch { border:none; border-radius:2px; }
+.layer-edit { font-size:12px; color:var(--t3); cursor:pointer; padding:0 2px; flex-shrink:0; }
+.layer-edit:hover { color:var(--accent); }
+.layer-opts { display:none; width:100%; gap:4px; align-items:center; padding:4px 0 2px 24px; }
+.layer-row.expanded .layer-opts { display:flex; }
+.layer-lt { flex:1; min-width:0; background:var(--panel2); border:1px solid var(--border); border-radius:3px; color:var(--t2); font-family:var(--fm); font-size:11px; padding:2px 3px; outline:none; }
+.layer-wt { width:44px; background:var(--panel2); border:1px solid var(--border); border-radius:3px; color:var(--t2); font-family:var(--fm); font-size:11px; padding:2px 3px; outline:none; }
+.layer-btn { background:var(--panel2); border:1px solid var(--border); border-radius:3px; color:var(--t3); font-size:11px; padding:2px 5px; cursor:pointer; }
+.layer-btn:hover { color:var(--accent); border-color:var(--accent-dim); }
+.layer-btn.del:hover { color:var(--red); border-color:var(--red); }
 
 /* ── CANVAS AREA ── */
 #canvas-wrap { position:relative; overflow:hidden; background:var(--void); flex:1; min-width:0; }
@@ -2804,6 +2817,11 @@ body.light-mode .tool-btn.active .tool-icon svg {
         <b>Raw</b> → individual shapes; compose manually.<br>
         <span style="color:var(--t3);">Closed polylines only.</span>
       </div>
+
+      <div class="dlg-actions">
+        <button class="dlg-btn cancel" onclick="closeSCADDialog()">Cancel</button>
+        <button class="dlg-btn commit" onclick="commitSCADExport()">Export</button>
+      </div>
     </div>
   </div>
 </div>
@@ -4493,13 +4511,23 @@ function drawSelBox() {
 
 // ── MOUSE EVENTS ────────────────────────────────────────
 canvas.addEventListener('mousedown',  onMouseDown);
-canvas.addEventListener('mouseleave', () => { cursorSeen = false; liveAim = false; render(); });
+// Every path by which active aiming ends. Also blanks the hover-source
+// badge — it was write-only before, so once any channel fired once it
+// stayed lit permanently and couldn't distinguish "receiving hover right
+// now" from "received something at some point."
+function endLiveAim() {
+  liveAim = false;
+  const badge = document.getElementById('hover-src');
+  if (badge) badge.textContent = '';
+  render();
+}
+canvas.addEventListener('mouseleave', () => { cursorSeen = false; endLiveAim(); });
 // Releasing touch or the pen leaving hover range ends active aiming —
 // the leading rubber segment hides rather than freezing where it was.
-canvas.addEventListener('touchend',    () => { liveAim = false; render(); }, {passive:true});
-canvas.addEventListener('touchcancel', () => { liveAim = false; render(); }, {passive:true});
+canvas.addEventListener('touchend',    () => { endLiveAim(); }, {passive:true});
+canvas.addEventListener('touchcancel', () => { endLiveAim(); }, {passive:true});
 canvas.addEventListener('pointerleave', (e) => {
-  if (e.pointerType !== 'mouse') { liveAim = false; render(); } // mouse handled by mouseleave above
+  if (e.pointerType !== 'mouse') { endLiveAim(); } // mouse handled by mouseleave above
 }, {passive:true});
 canvas.addEventListener('mousemove',  onMouseMove);
 
@@ -4540,7 +4568,13 @@ function feedHover(x, y, src) {
 // browser/OS builds, and '' (unknown) must pass through.
 function canvasPointerHover(e) {
   if (e.pointerType === 'mouse' || e.pointerType === 'touch') return;
-  feedHover(e.clientX, e.clientY, e.type === 'pointerrawupdate' ? 'raw' : 'ptr');
+  const chan = e.type === 'pointerrawupdate' ? 'raw' : 'ptr';
+  // A pen in the air reports pressure 0 with no buttons down; a pen on
+  // glass reports pressure > 0 (or buttons set). Tagging it makes the
+  // badge answer the question that actually matters — is this genuine
+  // hover, or just contact-drag arriving through the pointer channel?
+  const contact = (e.pressure > 0) || (e.buttons > 0);
+  feedHover(e.clientX, e.clientY, chan + (contact ? '·con' : '·HOV'));
 }
 canvas.addEventListener('pointermove', canvasPointerHover, {passive:true});
 canvas.addEventListener('pointerover', canvasPointerHover, {passive:true});
@@ -4571,7 +4605,8 @@ function windowHoverNet(e) {
   }
   const r = canvas.getBoundingClientRect();
   if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return;
-  feedHover(e.clientX, e.clientY, ('pointerType' in e) ? 'net' : 'mnet');
+  feedHover(e.clientX, e.clientY,
+    (('pointerType' in e) ? 'net' : 'mnet') + (((e.pressure > 0) || (e.buttons > 0)) ? '·con' : '·HOV'));
 }
 window.addEventListener('pointermove', windowHoverNet, {capture:true, passive:true});
 window.addEventListener('pointerover', windowHoverNet, {capture:true, passive:true});
@@ -6165,7 +6200,11 @@ function addCustomLayer() {
   if (!name || !name.trim()) return;
   const key = name.trim().toUpperCase();
   if (LAYERS[key]) { showToast('Layer already exists'); return; }
-  LAYERS[key] = { name:key, color:'#ffffff', ltype:'continuous', weight:1.0, visible:true, locked:false };
+  // Cycle through the ACI-friendly palette so each new layer is visually
+  // distinct on arrival — every property stays editable in the panel.
+  const PALETTE = ['#00d4ff','#ff4444','#ffdd00','#39ff14','#ff44ff','#ffffff','#ff9900'];
+  const color = PALETTE[Object.keys(LAYERS).length % PALETTE.length];
+  LAYERS[key] = { name:key, color, ltype:'continuous', weight:2.0, visible:true, locked:false };
   buildLayerPanel();
   setActiveLayer(key);
 }
@@ -6177,17 +6216,6 @@ function toggleLayerVisibility(name) {
   buildLayerPanel();
 }
 
-function applyLayerStyle(layerName) {
-  const lay = getLayer(layerName);
-  if (!lay.visible) { ctx.globalAlpha = 0; return false; }
-  ctx.globalAlpha  = 1;
-  ctx.strokeStyle  = lay.color;
-  ctx.fillStyle    = lay.color;
-  ctx.lineWidth    = lay.weight;
-  const lt = LINETYPES[lay.ltype] || LINETYPES.continuous;
-  ctx.setLineDash(lt.dash.map(d => d * cam.zoom * 0.3));
-  return true;
-}
 
 function buildLayerPanel() {
   const panel = document.getElementById('layer-list');
@@ -6197,15 +6225,83 @@ function buildLayerPanel() {
     const row = document.createElement('div');
     row.className = 'layer-row' + (key === activeLayer ? ' active' : '');
     row.dataset.layer = key;
+
+    // Line 1 — visibility, live colour picker, name, expand toggle.
+    // The colour input edits LAYERS directly, so it flows straight into
+    // both the canvas render and the DXF layer table on export.
+    const ltOpts = Object.keys(LINETYPES).map(k =>
+      `<option value="${k}"${k===lay.ltype?' selected':''}>${LINETYPES[k].label}</option>`).join('');
     row.innerHTML =
       '<span class="layer-vis" onclick="toggleLayerVisibility(\''+key+'\');event.stopPropagation()" title="Toggle visibility">'
         + (lay.visible ? '👁' : '○') + '</span>'
-      + '<span class="layer-swatch" style="background:'+lay.color+';"></span>'
+      + '<input type="color" class="layer-color" value="'+lay.color+'" title="Layer colour" '
+        + 'onclick="event.stopPropagation()" oninput="setLayerColor(\''+key+'\', this.value)">'
       + '<span class="layer-name">' + lay.name + '</span>'
-      + '<span class="layer-ltype">' + (LINETYPES[lay.ltype]?.label || '—') + '</span>';
+      + '<span class="layer-edit" title="Layer settings" '
+        + 'onclick="event.stopPropagation();this.parentNode.classList.toggle(\'expanded\')">⚙</span>'
+      + '<div class="layer-opts" onclick="event.stopPropagation()">'
+        + '<select class="layer-lt" title="Linetype" onchange="setLayerLtype(\''+key+'\', this.value)">'+ltOpts+'</select>'
+        + '<input type="number" class="layer-wt" title="Lineweight" min="0.1" max="10" step="0.1" '
+          + 'value="'+lay.weight+'" oninput="setLayerWeight(\''+key+'\', this.value)">'
+        + '<button class="layer-btn" title="Rename" onclick="renameLayer(\''+key+'\')">✎</button>'
+        + '<button class="layer-btn del" title="Delete layer" onclick="deleteLayer(\''+key+'\')">✕</button>'
+      + '</div>';
     row.onclick = () => setActiveLayer(key);
     panel.appendChild(row);
   }
+}
+
+// ── Layer property editors ────────────────────────────────────────────
+// Each writes straight into LAYERS, so a change shows on canvas at once
+// and carries through to DXF export (colour → ACI, ltype → LTYPE table).
+function setLayerColor(key, hex) {
+  if (!LAYERS[key]) return;
+  LAYERS[key].color = hex;
+  const ind = document.getElementById('active-layer-indicator');
+  if (key === activeLayer && ind) ind.style.color = hex;
+  render();
+}
+function setLayerLtype(key, lt) {
+  if (!LAYERS[key] || !LINETYPES[lt]) return;
+  LAYERS[key].ltype = lt;
+  render();
+}
+function setLayerWeight(key, w) {
+  if (!LAYERS[key]) return;
+  const v = parseFloat(w);
+  if (!isFinite(v) || v <= 0) return;
+  LAYERS[key].weight = v;
+  render();
+}
+function renameLayer(key) {
+  if (!LAYERS[key]) return;
+  const next = prompt('Rename layer:', LAYERS[key].name);
+  if (!next || !next.trim()) return;
+  const nk = next.trim().toUpperCase();
+  if (nk === key) return;
+  if (LAYERS[nk]) { showToast('Layer already exists'); return; }
+  // Rebuild in place so panel order is preserved, and carry every object
+  // on the old layer across — otherwise they'd point at a dead name.
+  const entries = Object.entries(LAYERS).map(([k,v]) =>
+    k === key ? [nk, {...v, name:nk}] : [k, v]);
+  for (const k of Object.keys(LAYERS)) delete LAYERS[k];
+  for (const [k,v] of entries) LAYERS[k] = v;
+  for (const o of GeoMemory.objects) if (o.layer === key) o.layer = nk;
+  if (activeLayer === key) activeLayer = nk;
+  buildLayerPanel(); render();
+  showToast('Renamed to ' + nk);
+}
+function deleteLayer(key) {
+  if (!LAYERS[key]) return;
+  if (Object.keys(LAYERS).length <= 1) { showToast('Cannot delete the last layer'); return; }
+  const orphans = GeoMemory.objects.filter(o => o.layer === key).length;
+  const fallback = Object.keys(LAYERS).find(k => k !== key);
+  if (orphans && !confirm(`Delete layer "${key}"?\n${orphans} object(s) will move to ${fallback}.`)) return;
+  for (const o of GeoMemory.objects) if (o.layer === key) o.layer = fallback;
+  delete LAYERS[key];
+  if (activeLayer === key) setActiveLayer(fallback);
+  buildLayerPanel(); render();
+  showToast('Deleted layer ' + key);
 }
 
 
@@ -6315,6 +6411,7 @@ function render() {
   drawRotatePreview();
   drawMirrorPreview();
   drawMeasurePreview();
+  drawDimPreview();
   drawChamferPreview();
   drawSelBox();
   drawCursorCrosshair();
@@ -7016,7 +7113,61 @@ function buildDXF(objects, units) {
   const lines=[];
   // AC1014 = R14, minimum version that supports LWPOLYLINE
   lines.push('0','SECTION','2','HEADER','9','$ACADVER','1','AC1014','9','$INSUNITS','70',insunits,'0','ENDSEC');
-  lines.push('0','SECTION','2','TABLES','0','TABLE','2','LAYER','70','1','0','LAYER','2','Layer_0','70','0','62','7','6','CONTINUOUS','0','ENDTAB','0','ENDSEC');
+  // ── TABLES: LTYPE then LAYER ──────────────────────────────────────────
+  // Entities below are written with their real layer (group 8). Declaring
+  // only Layer_0 here — as this used to — left every other layer
+  // undeclared: strict readers reject the file, lenient ones auto-create
+  // the layer with default properties, so KAD's colors and linetypes were
+  // silently lost on export. Both tables are now emitted from LAYERS.
+  const DXF_LT = {
+    continuous: { desc:'Solid line',        pattern:[] },
+    dashed:     { desc:'Dashed __ __ __',   pattern:[0.5,-0.25] },
+    center:     { desc:'Center ___ _ ___',  pattern:[1.25,-0.25,0.25,-0.25] },
+    phantom:    { desc:'Phantom ___ _ _ ___', pattern:[1.25,-0.25,0.25,-0.25,0.25,-0.25] },
+  };
+  // Nearest AutoCAD Color Index for a hex colour — ACI 1-9 are the only
+  // indices every DXF reader agrees on, so snap to the closest.
+  const ACI = [[1,255,0,0],[2,255,255,0],[3,0,255,0],[4,0,255,255],
+               [5,0,0,255],[6,255,0,255],[7,255,255,255],[8,128,128,128],[9,192,192,192]];
+  function hexToACI(hex) {
+    const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || '');
+    if (!m) return 7;
+    const r = parseInt(m[1],16), g = parseInt(m[2],16), b = parseInt(m[3],16);
+    let best = 7, bestD = Infinity;
+    for (const [idx,cr,cg,cb] of ACI) {
+      const d = (r-cr)**2 + (g-cg)**2 + (b-cb)**2;
+      if (d < bestD) { bestD = d; best = idx; }
+    }
+    return best;
+  }
+
+  const usedLt = new Set(['continuous']);
+  for (const lay of Object.values(LAYERS)) if (DXF_LT[lay.ltype]) usedLt.add(lay.ltype);
+  const ltList = [...usedLt];
+
+  lines.push('0','SECTION','2','TABLES');
+  lines.push('0','TABLE','2','LTYPE','70',String(ltList.length));
+  for (const key of ltList) {
+    const lt = DXF_LT[key];
+    const total = lt.pattern.reduce((s,v)=>s+Math.abs(v),0);
+    lines.push('0','LTYPE','2',key.toUpperCase(),'70','0','3',lt.desc,
+               '72','65','73',String(lt.pattern.length),'40',total.toFixed(4));
+    for (const seg of lt.pattern) lines.push('49', seg.toFixed(4));
+  }
+  lines.push('0','ENDTAB');
+
+  const layKeys = Object.keys(LAYERS);
+  lines.push('0','TABLE','2','LAYER','70',String(layKeys.length));
+  for (const key of layKeys) {
+    const lay = LAYERS[key];
+    const aci = hexToACI(lay.color);
+    // DXF convention: a negative colour index means the layer is off.
+    // Flag 4 = locked. Both map straight across from KAD's own layer state.
+    lines.push('0','LAYER','2',lay.name,'70', lay.locked ? '4' : '0',
+               '62', String(lay.visible === false ? -aci : aci),
+               '6', (DXF_LT[lay.ltype] ? lay.ltype : 'continuous').toUpperCase());
+  }
+  lines.push('0','ENDTAB','0','ENDSEC');
   lines.push('0','SECTION','2','ENTITIES');
   for(const o of objects){
     if(o.type==='LINE')
@@ -7168,25 +7319,12 @@ function buildSCAD(objects, extrudeH, joinMode) {
   lines.push('// All coordinates in mm');
   lines.push('');
 
-  // Group objects by layer
-  const byLayer = {};
-  for (const o of objects) {
-    const ly = o.layer || 'Layer_0';
-    if (!byLayer[ly]) byLayer[ly] = [];
-    byLayer[ly].push(o);
-  }
-
-  // ARC tessellation helper (for SCAD arc approximation)
+  // ── ARC tessellation (shared by outline strokes and circle hit-testing) ──
   function arcToPolygonPts(cx, cy, r, startA, endA, ccw, segments=64) {
     const pts = [];
     let a0 = startA, a1 = endA;
-    if (ccw) {
-      // go from a0 → a1 counter-clockwise (increasing angle)
-      if (a1 < a0) a1 += 2*Math.PI;
-    } else {
-      // go from a0 → a1 clockwise (decreasing angle)
-      if (a1 > a0) a1 -= 2*Math.PI;
-    }
+    if (ccw) { if (a1 < a0) a1 += 2*Math.PI; }
+    else     { if (a1 > a0) a1 -= 2*Math.PI; }
     const span = a1 - a0;
     const steps = Math.max(4, Math.ceil(Math.abs(span) / (2*Math.PI) * segments));
     for (let i = 0; i <= steps; i++) {
@@ -7195,73 +7333,136 @@ function buildSCAD(objects, extrudeH, joinMode) {
     }
     return pts;
   }
+  const ptsToStr = pts => '[' + pts.map(p=>`[${p[0]},${p[1]}]`).join(', ') + ']';
 
-  function ptsToStr(pts) {
-    return '[' + pts.map(p=>`[${p[0]},${p[1]}]`).join(', ') + ']';
+  // ── HOLE DETECTION ────────────────────────────────────────────────────
+  // A closed shape fully inside another closed shape is a hole, not an
+  // added solid — the single most common 2D→3D intent (plate with bolt
+  // holes). Everything used to land in one union(), so an inner circle
+  // became a redundant cylinder embedded in the plate instead of a hole.
+  // Nesting alternates: shape → hole → island → hole… handled recursively.
+  function closedPts(o) {
+    if (o.type === 'POLYLINE' && o.closed && o.pts && o.pts.length >= 3)
+      return o.pts.map(p => [p.x, p.y]);
+    if (o.type === 'CIRCLE')
+      return arcToPolygonPts(o.cx, o.cy, o.r, 0, 2*Math.PI, true, 64);
+    return null;
+  }
+  function ptInPoly(x, y, pts) {
+    let inside = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1];
+      if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi))
+        inside = !inside;
+    }
+    return inside;
+  }
+  function polyArea(pts) {
+    let a = 0;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++)
+      a += (pts[j][0] + pts[i][0]) * (pts[j][1] - pts[i][1]);
+    return Math.abs(a / 2);
+  }
+  // Every vertex of inner inside outer, and outer genuinely larger —
+  // the area guard stops identical/near-identical shapes pairing up.
+  function encloses(outer, inner) {
+    if (outer.area <= inner.area) return false;
+    return inner.pts.every(p => ptInPoly(p[0], p[1], outer.pts));
   }
 
-  // Collect all 2D shapes as SCAD module calls
-  const shapeBlocks = [];
+  const nodes = [];
+  for (const o of objects) {
+    const pts = closedPts(o);
+    if (pts) nodes.push({ obj:o, pts, area:polyArea(pts), children:[], parent:null });
+  }
+  // Immediate parent = the SMALLEST shape that encloses this one, so a
+  // hole attaches to its own pocket rather than the outermost boundary.
+  for (const n of nodes) {
+    let best = null;
+    for (const p of nodes) {
+      if (p === n) continue;
+      if (encloses(p, n) && (!best || p.area < best.area)) best = p;
+    }
+    n.parent = best;
+    if (best) best.children.push(n);
+  }
 
+  function shapeCall(o) {
+    if (o.type === 'CIRCLE')
+      return `translate([${f(o.cx)}, ${f(o.cy)}, 0]) circle(r=${f(o.r)}, $fn=64);`;
+    return `polygon(points=${ptsToStr(o.pts.map(p=>[f(p.x),f(p.y)]))});`;
+  }
+  // difference() the direct children out, then union any grandchildren
+  // back in — those sit inside a hole, so they're solid islands again.
+  function emitNode(n, ind) {
+    const base = shapeCall(n.obj);
+    if (!n.children.length) return ind + base;
+    const islands = [];
+    for (const h of n.children) islands.push(...h.children);
+    const out = [];
+    const wrap = islands.length > 0;
+    if (wrap) out.push(ind + 'union() {');
+    const i2 = wrap ? ind + '  ' : ind;
+    out.push(i2 + 'difference() {');
+    out.push(i2 + '  ' + base + ' // profile');
+    for (const h of n.children) out.push(i2 + '  ' + shapeCall(h.obj) + ' // hole');
+    out.push(i2 + '}');
+    for (const isl of islands) out.push(emitNode(isl, i2));
+    if (wrap) out.push(ind + '}');
+    return out.join('\n');
+  }
+
+  const shapeBlocks = [];
+  // Odd nesting depth = subtracted hole; even = solid island added back.
+  const depthOf = n => { let d = 0, p = n.parent; while (p) { d++; p = p.parent; } return d; };
+  const holeCount = nodes.filter(n => depthOf(n) % 2 === 1).length;
+  for (const n of nodes) if (!n.parent) shapeBlocks.push(emitNode(n, '  '));
+
+  // ── Open geometry (lines, open polylines, arcs) → thin stroke walls ──
+  // No enclosed area, so nothing to fill; kept grouped by layer.
+  const byLayer = {};
+  for (const o of objects) {
+    if (closedPts(o)) continue;
+    const ly = o.layer || 'Layer_0';
+    (byLayer[ly] = byLayer[ly] || []).push(o);
+  }
   for (const [layer, objs] of Object.entries(byLayer)) {
-    shapeBlocks.push(`  // Layer: ${layer}`);
+    shapeBlocks.push(`  // Layer: ${layer} (open geometry → 0.2mm strokes)`);
     for (const o of objs) {
       if (o.type === 'LINE') {
-        // Lines become thin stroke hulls (0.2mm wide) — useful for wireframe extrusions
         const dx = o.x2 - o.x1, dy = o.y2 - o.y1;
         const len = Math.hypot(dx, dy);
         if (len < 1e-10) continue;
-        const angle = f(Math.atan2(dy, dx) * RAD2DEG);
         shapeBlocks.push(
           `  translate([${f(o.x1)}, ${f(o.y1)}, 0])\n` +
-          `    rotate([0, 0, ${angle}])\n` +
-          `      square([${f(len)}, 0.2], center=false); // LINE`
-        );
+          `    rotate([0, 0, ${f(Math.atan2(dy,dx)*RAD2DEG)}])\n` +
+          `      square([${f(len)}, 0.2], center=false); // LINE`);
       } else if (o.type === 'POLYLINE' && o.pts && o.pts.length >= 2) {
-        if (o.closed && o.pts.length >= 3) {
-          // Closed polyline → filled polygon
-          const pts = o.pts.map(p => [f(p.x), f(p.y)]);
-          shapeBlocks.push(`  polygon(points=${ptsToStr(pts)}); // POLYLINE closed`);
-        } else {
-          // Open polyline → chain of thin stroke segments
-          for (let i = 0; i < o.pts.length - 1; i++) {
-            const p1 = o.pts[i], p2 = o.pts[i+1];
-            const dx = p2.x-p1.x, dy = p2.y-p1.y;
-            const len = Math.hypot(dx, dy);
-            if (len < 1e-10) continue;
-            const angle = f(Math.atan2(dy, dx) * RAD2DEG);
-            shapeBlocks.push(
-              `  translate([${f(p1.x)}, ${f(p1.y)}, 0])\n` +
-              `    rotate([0, 0, ${angle}])\n` +
-              `      square([${f(len)}, 0.2], center=false); // POLYLINE seg`
-            );
-          }
+        for (let i = 0; i < o.pts.length - 1; i++) {
+          const p1 = o.pts[i], p2 = o.pts[i+1];
+          const dx = p2.x-p1.x, dy = p2.y-p1.y;
+          const len = Math.hypot(dx, dy);
+          if (len < 1e-10) continue;
+          shapeBlocks.push(
+            `  translate([${f(p1.x)}, ${f(p1.y)}, 0])\n` +
+            `    rotate([0, 0, ${f(Math.atan2(dy,dx)*RAD2DEG)}])\n` +
+            `      square([${f(len)}, 0.2], center=false); // POLYLINE seg`);
         }
-      } else if (o.type === 'CIRCLE') {
-        shapeBlocks.push(
-          `  translate([${f(o.cx)}, ${f(o.cy)}, 0])\n` +
-          `    circle(r=${f(o.r)}, $fn=64); // CIRCLE`
-        );
       } else if (o.type === 'ARC') {
-        // Arc → tessellated polygon outline (thin)
-        const pts = arcToPolygonPts(o.cx, o.cy, o.r, o.startA, o.endA, o.ccw, 64);
-        if (pts.length >= 2) {
-          // Build a thin stroke polygon along the arc
-          const innerPts = arcToPolygonPts(o.cx, o.cy, o.r - 0.15, o.startA, o.endA, o.ccw, 64);
-          const allPts = [...pts, ...[...innerPts].reverse()];
-          shapeBlocks.push(`  polygon(points=${ptsToStr(allPts)}); // ARC`);
-        }
+        const outer = arcToPolygonPts(o.cx, o.cy, o.r, o.startA, o.endA, o.ccw, 64);
+        const inner = arcToPolygonPts(o.cx, o.cy, o.r - 0.15, o.startA, o.endA, o.ccw, 64);
+        if (outer.length >= 2)
+          shapeBlocks.push(`  polygon(points=${ptsToStr([...outer, ...inner.reverse()])}); // ARC`);
       }
     }
   }
 
-  // Compose final SCAD based on join mode
+  if (holeCount) lines.push(`// ${holeCount} enclosed shape(s) subtracted as holes`, '');
+
   if (joinMode === 'extrude') {
     lines.push(`linear_extrude(height=${f(extrudeH)}, center=false, convexity=10) {`);
     lines.push('  union() {');
-    for (const b of shapeBlocks) {
-      lines.push('  ' + b.split('\n').join('\n  '));
-    }
+    for (const b of shapeBlocks) lines.push('  ' + b.split('\n').join('\n  '));
     lines.push('  }');
     lines.push('}');
   } else if (joinMode === 'flat') {
@@ -7270,14 +7471,13 @@ function buildSCAD(objects, extrudeH, joinMode) {
     for (const b of shapeBlocks) lines.push(b);
     lines.push('}');
   } else {
-    // 'raw' — output each shape separately with a comment
     lines.push('// Raw shapes — no union wrapper');
     lines.push('// Tip: wrap in linear_extrude(height=5) { ... } to make 3D');
     for (const b of shapeBlocks) lines.push(b);
   }
 
   lines.push('');
-  lines.push('// End of .KAD Beta export');
+  lines.push('// End of .KAD export');
   return lines.join('\n');
 }
 
@@ -7482,7 +7682,6 @@ let kvCtx         = null;
 let kvEraseC      = null;
 let kvEraseCtx    = null;
 let kvSnapEnabled = true;
-let kvSelectedId  = null;
 let kvDimStd      = 'asme';   // 'ansi'|'asme'|'aws'|'arch'
 let kvDimState    = {active:false, p1:null, p2:null, offset:0};
 let kvWeldState   = {active:false, p1:null, p2:null};
@@ -7581,8 +7780,6 @@ const B = {
   color:'#ff3cac', opacity:0.9, size:10, alpha:0.72, taper:0.7, glow:false,
   blend:'source-over', type:'brush'
 };
-const ER = { size:24, mode:'pixel', opacity:1 };
-const SH = { type:'rect', fill:false, fillColor:'rgba(255,60,172,0.12)', color:'#ff3cac' };
 
 // ── DIMENSIONING ENGINE ───────────────────────────────────────────────────────
 const DIM_STYLES = {
@@ -8091,8 +8288,6 @@ function kvOnUp(e) {
 }
 
 // ── KANVAS ERASE CANVAS ───────────────────────────────────────────────────────
-let kvEma = null;
-let kvVel = null;
 
 function kvInitDrawing() {
   // Deferred — EMAStab/VelTrack may not exist in base KAD (those are VAD classes)
