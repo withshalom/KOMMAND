@@ -3750,7 +3750,7 @@ function commitLineChain(closed) {
     GeoMemory.addLine(lineChain[0].x, lineChain[0].y, lineChain[1].x, lineChain[1].y, activeLayer||'Layer_0');
     showToast('Line segment committed');
   } else {
-    GeoMemory.addPolyline([...lineChain], closed);
+    GeoMemory.addPolyline([...lineChain], closed, activeLayer||'Layer_0');
     showToast(`${closed ? 'Closed' : 'Open'} polyline · ${lineChain.length} pts`);
   }
   lineState = {active:false};
@@ -6444,10 +6444,24 @@ function closeLayerDropdown() {
 // Any click outside the control closes it — but never a click on the
 // rows inside it, which have their own handlers (colour picker, ⚙
 // expander, lineweight field) that must not be cut short.
+//
+// Both listeners bail out immediately unless the dropdown is actually
+// open, so in the overwhelmingly common case (dropdown closed) they are
+// true no-ops and cannot participate in canvas, KOMMAND, or Escape
+// handling at all. The Element guard matters because a synthetic or
+// retargeted event can deliver a non-Element target, where .closest is
+// undefined and would throw inside a global handler.
+function _layerDropdownIsOpen() {
+  const wrap = document.getElementById('layer-dd-wrap');
+  return !!(wrap && wrap.classList.contains('open'));
+}
 document.addEventListener('click', (e) => {
+  if (!_layerDropdownIsOpen()) return;
+  if (!(e.target instanceof Element)) { closeLayerDropdown(); return; }
   if (!e.target.closest('#layer-dd-wrap')) closeLayerDropdown();
 });
 document.addEventListener('keydown', (e) => {
+  if (!_layerDropdownIsOpen()) return;   // never touches Escape otherwise
   if (e.key === 'Escape') closeLayerDropdown();
 });
 // ── Layer property editors ────────────────────────────────────────────
@@ -6860,11 +6874,13 @@ function drawRubberBand() {
   }
 
   // ── Rubber band line from last point to cursor ──
-  // Only while input is live (hover, mouse move, touch/pen drag). On
-  // release the leading segment disappears rather than freezing at the
-  // last aimed position — the cast ray is an aiming aid, not drawing
-  // state; the committed chain above stays, the aim beam doesn't.
-  if (liveAim) {
+  // The cast ray PERSISTS after release. It was briefly gated on liveAim
+  // so it vanished the moment touch ended — that was the wrong call. On a
+  // touch device the aim beam is the only thing showing where the next
+  // point will land, and having it disappear on lift means you release,
+  // see nothing, and can't tell whether the tool is still armed. It stays
+  // until the chain is committed or cancelled.
+  {
     const ep  = snapActive&&snapPoint ? snapPoint : mouseWorld;
     const end = worldToScreen(ep.x, ep.y);
     const start = worldToScreen(lineState.x1, lineState.y1);
@@ -6895,7 +6911,7 @@ function drawRubberBand() {
   ctx.stroke();
 
   // ── Closing indicator: if cursor is near chain start, highlight it ──
-  if(liveAim && lineChain.length >= 2) {
+  if(lineChain.length >= 2) {
     const ep  = snapActive&&snapPoint ? snapPoint : mouseWorld;
     const startScreen = worldToScreen(lineChain[0].x, lineChain[0].y);
     const endScreen   = worldToScreen(ep.x, ep.y);
