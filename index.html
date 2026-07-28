@@ -1184,6 +1184,44 @@ body.drafting-mode #app { pointer-events:auto; z-index:20; }
   font-size: 10px; color: #000; font-weight: 700; flex-shrink: 0;
 }
 
+/* ── LAYERS dropdown — tab bar, right of the mode tabs ──
+   The layer list previously lived only in the sidebar, which is closed by
+   default on mobile: the active layer was both unreadable and unreachable
+   without first opening the drawer and scrolling. Mounting the same list
+   here makes switching layers one tap from anywhere, on any pointer type,
+   and keeps the drawing layer permanently legible in the button label. */
+.tab-spacer { flex: 1; min-width: 8px; }
+#layer-dd-wrap { position: relative; display: flex; align-items: center; padding-right: 6px; flex-shrink: 0; }
+#layer-dd-btn {
+  display: flex; align-items: center; gap: 6px; height: 24px;
+  background: var(--panel2); border: 1px solid var(--border-hi); border-radius: 4px;
+  color: var(--t2); font-family: var(--fu); font-size: 11px; letter-spacing: 0.1em;
+  text-transform: uppercase; padding: 0 8px; cursor: pointer; white-space: nowrap;
+}
+#layer-dd-btn:hover { color: var(--t1); border-color: var(--accent-dim); }
+#layer-dd-wrap.open #layer-dd-btn { border-color: var(--accent); color: var(--accent); }
+#layer-dd-swatch { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; background: var(--accent); }
+#layer-dd-name { font-family: var(--fm); letter-spacing: 0.04em; color: var(--accent); }
+#layer-dd-caret { font-size: 8px; opacity: 0.7; }
+#layer-dd-panel {
+  display: none; position: absolute; top: calc(100% + 4px); right: 0;
+  min-width: 250px; max-height: 60vh; overflow-y: auto;
+  -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+  background: var(--panel); border: 1px solid var(--border-hi); border-radius: 6px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 240; padding: 5px;
+}
+#layer-dd-wrap.open #layer-dd-panel { display: block; }
+#layer-dd-panel .layer-hint {
+  display: block; padding: 2px 8px 6px; border-bottom: 1px solid var(--border); margin-bottom: 4px;
+}
+/* Phone: shrink the button chrome and let the panel use the screen width,
+   but keep it anchored to the same control so it never floats loose. */
+.mobile-mode #layer-dd-btn { font-size: 10px; padding: 0 6px; gap: 4px; }
+.mobile-mode #layer-dd-btn .dd-word { display: none; }  /* swatch + name carry it */
+.mobile-mode #layer-dd-panel { min-width: 0; width: min(300px, calc(100vw - 16px)); }
+.mobile-mode #layer-dd-panel .layer-row { padding: 7px 8px; }  /* larger tap targets */
+
+
 /* ── Model / KANVAS pane wrappers ── */
 #model-pane  { display: flex; flex: 1; overflow: hidden; grid-column: 1 / -1; height: 100%; min-height: 0; }
 #kanvas-pane { display: none; flex: 1; overflow: hidden; position: relative; grid-column: 1 / -1; }
@@ -2000,6 +2038,20 @@ body.light-mode .tool-btn.active .tool-icon svg {
   </div>
   <div class="tab-item kanvas-tab" id="kad-tab-kanvas" onclick="kadSwitchTab('kanvas')">
     <div class="tab-mark" style="background:linear-gradient(135deg,#0090a8,#006888);color:#000;">KV</div>KANVAS
+  </div>
+  <div class="tab-spacer"></div>
+  <div id="layer-dd-wrap">
+    <button id="layer-dd-btn" onclick="toggleLayerDropdown(event)" title="Drawing layer — click to switch layers">
+      <span id="layer-dd-swatch"></span>
+      <span class="dd-word">Layers</span>
+      <span id="layer-dd-name">SOLID</span>
+      <span id="layer-dd-caret">▼</span>
+    </button>
+    <div id="layer-dd-panel">
+      <span class="layer-hint">Tap a layer to draw on it</span>
+      <div id="layer-dd-list"></div>
+      <button class="layer-add-btn" onclick="addCustomLayer()">+ New Layer</button>
+    </div>
   </div>
 </div>
 
@@ -2925,25 +2977,56 @@ function getGridStepsForUnit() {
 // ── STARTUP SPLASH ───────────────────────────────────────
 const SPLASH_KEY = 'kad_unit_chosen';
 
+// Everything that's identical no matter which entry point is firing
+// (manual toggle, splash pick / returning-visitor restore, or a silent
+// default) — toggle-button state, sidebar/context/coord labels, the
+// dynamic length/angle box unit, and the grid. One function owns what
+// "the screen is showing unit X" means so no caller can carry a partial
+// copy that drifts from the others and leaves stale labels behind.
+function applyUnitDisplay(unit) {
+  document.getElementById('unit-seg-mm').classList.toggle('active', unit==='mm');
+  document.getElementById('unit-seg-in').classList.toggle('active', unit==='in');
+  document.getElementById('prop-units').textContent = unit;
+  const ctxLbl = document.getElementById('ctx-unit-label');
+  if(ctxLbl) ctxLbl.textContent = unit==='mm' ? 'Switch to inches' : 'Switch to mm';
+  const coordCur = document.getElementById('coord-cur-unit');
+  if(coordCur) coordCur.textContent = unit;
+  const coordLbl = document.getElementById('coord-unit-lbl');
+  if(coordLbl) coordLbl.textContent = unit;
+  const dynLenUnit = document.getElementById('dyn-len-unit');
+  if (dynLenUnit) dynLenUnit.textContent = unit;
+  if (typeof updateDynBox==='function' && typeof getDynAnchor==='function') updateDynBox(getDynAnchor());
+  updateGridLabel();
+}
+
+// Resets the offset/fillet/chamfer inputs to a sensible fixed default for
+// a FRESH session (splash pick, or a silent default) — as opposed to a
+// mid-session toggleUnits() call, which converts whatever value is
+// already sitting in these fields instead of clobbering it. Two
+// genuinely different behaviors, not one duplicated from the other.
+function resetScaledInputDefaults(unit) {
+  const distInput = document.getElementById('offset-dist-input');
+  if (unit === 'in') { distInput.value='0.5'; distInput.step='0.0625'; document.getElementById('offset-dist-unit').textContent='in'; }
+  else               { distInput.value='10';  distInput.step='0.5';    document.getElementById('offset-dist-unit').textContent='mm'; }
+  // Fillet radius and chamfer distance — same pattern. Previously reset by
+  // neither the splash path nor a silent default, so both stayed on the
+  // mm-scaled HTML default ("5" / "mm") even in an inches session — the
+  // same class of bug as the offset field, just a smaller one.
+  [['fillet-r-input','fillet-r-unit'], ['chamfer-d-input','chamfer-d-unit']].forEach(([inId,unitId])=>{
+    const inp = document.getElementById(inId), unitLbl = document.getElementById(unitId);
+    if(!inp) return;
+    if (unit === 'in') { inp.value='0.25'; inp.step='0.0625'; if(unitLbl) unitLbl.textContent='in'; }
+    else                { inp.value='5';    inp.step='0.5';    if(unitLbl) unitLbl.textContent='mm'; }
+  });
+}
+
 function splashSelectUnit(unit) {
   // Apply the chosen unit
   if (unit !== unitMode) {
     // Force unit without toggling UI redundantly
     unitMode = unit;
-    document.getElementById('unit-seg-mm').classList.toggle('active', unit==='mm');
-    document.getElementById('unit-seg-in').classList.toggle('active', unit==='in');
-    document.getElementById('prop-units').textContent = unit;
-    const ctxLbl = document.getElementById('ctx-unit-label');
-    if(ctxLbl) ctxLbl.textContent = unit==='mm' ? 'Switch to inches' : 'Switch to mm';
-    const coordCur = document.getElementById('coord-cur-unit');
-    if(coordCur) coordCur.textContent = unit;
-    const coordLbl = document.getElementById('coord-unit-lbl');
-    if(coordLbl) coordLbl.textContent = unit;
-    // Offset dist input
-    const distInput = document.getElementById('offset-dist-input');
-    if (unit === 'in') { distInput.value='0.5'; distInput.step='0.0625'; document.getElementById('offset-dist-unit').textContent='in'; }
-    else               { distInput.value='10';  distInput.step='0.5';    document.getElementById('offset-dist-unit').textContent='mm'; }
-    updateGridLabel();
+    applyUnitDisplay(unit);
+    resetScaledInputDefaults(unit);
     render();
   }
   // Save and close — never show again this session/browser
@@ -2961,9 +3044,8 @@ function initSplash() {
   // splash lets the user confirm or switch to mm. A choice stored in this
   // browser is applied silently on later visits and the splash is skipped.
   unitMode = 'in';
-  document.getElementById('unit-seg-in').classList.add('active');
-  document.getElementById('unit-seg-mm').classList.remove('active');
-  updateGridLabel();
+  applyUnitDisplay('in');
+  resetScaledInputDefaults('in');
   let saved = null;
   try { saved = localStorage.getItem(SPLASH_KEY); } catch(e){}
   if (saved === 'mm' || saved === 'in') {
@@ -2979,31 +3061,23 @@ function initSplash() {
 
 function toggleUnits() {
   unitMode = (unitMode === 'mm') ? 'in' : 'mm';
-  // Update toggle button appearance
-  document.getElementById('unit-seg-mm').classList.toggle('active', unitMode==='mm');
-  document.getElementById('unit-seg-in').classList.toggle('active', unitMode==='in');
-  // Update sidebar props
-  document.getElementById('prop-units').textContent = unitMode;
-  // Update context menu label
-  const ctxLbl = document.getElementById('ctx-unit-label');
-  if(ctxLbl) ctxLbl.textContent = unitMode==='mm' ? 'Switch to inches' : 'Switch to mm';
-  // Update offset distance input: convert current value to new unit
+  applyUnitDisplay(unitMode);
+  // Offset distance + fillet radius + chamfer distance: convert whatever
+  // value is already there to the new unit instead of resetting it, so an
+  // in-progress custom setting survives a manual unit switch. This is why
+  // toggleUnits() doesn't call resetScaledInputDefaults() — the fresh-
+  // session reset and this conversion are deliberately different behaviors.
   const distInput = document.getElementById('offset-dist-input');
   const oldVal = parseFloat(distInput.value)||10;
   if(unitMode==='in'){
-    // was mm, now show inches
     distInput.value = (oldVal / MM_PER_IN).toFixed(4);
     distInput.step  = '0.0625';
     document.getElementById('offset-dist-unit').textContent = 'in';
   } else {
-    // was in, now show mm
     distInput.value = (oldVal * MM_PER_IN).toFixed(2);
     distInput.step  = '0.5';
     document.getElementById('offset-dist-unit').textContent = 'mm';
   }
-  // Fillet radius and chamfer distance — same conversion, same pattern.
-  // The unit labels here were previously never updated at all (always
-  // showed "mm" even in inch mode) since no code ever touched them.
   [['fillet-r-input','fillet-r-unit'], ['chamfer-d-input','chamfer-d-unit']].forEach(([inId,unitId])=>{
     const inp = document.getElementById(inId), unitLbl = document.getElementById(unitId);
     if(!inp) return;
@@ -3011,20 +3085,6 @@ function toggleUnits() {
     if(unitMode==='in'){ inp.value=(v/MM_PER_IN).toFixed(4); inp.step='0.0625'; if(unitLbl)unitLbl.textContent='in'; }
     else               { inp.value=(v*MM_PER_IN).toFixed(2); inp.step='0.5';    if(unitLbl)unitLbl.textContent='mm'; }
   });
-  // Dynamic length/angle box: its displayed number is always re-derived
-  // from dynBox.lockedLen (stored in canonical mm, unaffected by this
-  // toggle) rather than read back from the field itself, so only the
-  // unit label needs setting here — updateDynBox() redraws the number.
-  const dynLenUnit = document.getElementById('dyn-len-unit');
-  if (dynLenUnit) dynLenUnit.textContent = unitMode;
-  if (typeof updateDynBox==='function' && typeof getDynAnchor==='function') updateDynBox(getDynAnchor());
-  updateGridLabel();
-  // Update coord overlay unit label
-  const coordLbl = document.getElementById('coord-unit-lbl');
-  if(coordLbl) coordLbl.textContent = unitMode;
-  // Update coord help panel unit label
-  const coordCur = document.getElementById('coord-cur-unit');
-  if(coordCur) coordCur.textContent = unitMode;
   try { localStorage.setItem(SPLASH_KEY, unitMode); } catch(e){}
   render();
   showToast('Units: ' + (unitMode==='mm' ? 'millimeters (mm)' : 'inches (in)') + ' — geometry unchanged');
@@ -3231,8 +3291,9 @@ let rectState = { active:false, x1:0, y1:0 };
 // Polygon tool  (center+radius mode)
 let polyState = { active:false, cx:0, cy:0 };
 
-// Offset tool
-let offsetState = { active:false, selectedLine:null, previewPts:null };
+// Offset tool. selected/preview hold a tagged {kind:'line'|'circle'|'arc', ...}
+// — a plain LINE, one segment of a POLYLINE (read-only), or a CIRCLE/ARC.
+let offsetState = { active:false, selected:null, preview:null };
 
 // Rotate tool
 let rotateState = {
@@ -3533,7 +3594,7 @@ function closeOffsetPopup() {
 
 function cancelOffsetPopup() {
   closeOffsetPopup();
-  offsetState = { active:false, selectedLine:null, previewPts:null };
+  offsetState = { active:false, selected:null, preview:null };
   render();
 }
 
@@ -3589,6 +3650,52 @@ function ptSegDist(px,py,ax,ay,bx,by) {
   if(lenSq<1e-10) return Math.hypot(px-ax,py-ay);
   const t=Math.max(0,Math.min(1,((px-ax)*dx+(py-ay)*dy)/lenSq));
   return Math.hypot(px-(ax+t*dx), py-(ay+t*dy));
+}
+
+// Circle/arc offset is exact by construction — same center, radius plus
+// or minus the requested distance. None of the corner-trimming problems
+// straight-segment offsetting has; sign just decides whether the new
+// curve nests inside or outside the original.
+function buildOffsetCircle(o, signedDist) {
+  return { cx:o.cx, cy:o.cy, r:parseFloat(Math.max(0.001, o.r+signedDist).toFixed(4)) };
+}
+function buildOffsetArc(o, signedDist) {
+  return { cx:o.cx, cy:o.cy, r:parseFloat(Math.max(0.001, o.r+signedDist).toFixed(4)),
+           startA:o.startA, endA:o.endA, ccw:o.ccw };
+}
+
+// Offset target picking — LINE, one segment of a POLYLINE, or the
+// outline of a CIRCLE/ARC. Reuses allSegments() (built for TRIM/EXTEND/
+// BREAK) so a polyline edge resolves the same "line-like segment" way
+// those tools already see it: read-only, by endpoints, with the parent
+// polyline itself never modified or exploded — offset only ever adds a
+// brand new, independent object. Kept separate from pickLine(), which
+// FILLET/CHAMFER need for a real LINE object with a stable .id since
+// they trim/mutate what gets picked; offset never does either.
+function pickOffsettable(sx, sy) {
+  let best=null, bestD=Infinity;
+  for (const seg of allSegments()) {
+    const a=worldToScreen(seg.x1,seg.y1), b=worldToScreen(seg.x2,seg.y2);
+    const d=ptSegDist(sx,sy,a.x,a.y,b.x,b.y);
+    if (d<HIT_PX && d<bestD) {
+      bestD=d;
+      best={ kind:'line', x1:seg.x1, y1:seg.y1, x2:seg.x2, y2:seg.y2, layer:seg.obj.layer };
+    }
+  }
+  const wp = screenToWorld(sx, sy);
+  for (const o of GeoMemory.objects) {
+    if (o.type!=='CIRCLE' && o.type!=='ARC') continue;
+    const c=worldToScreen(o.cx,o.cy), screenR=o.r*cam.zoom;
+    const d=Math.abs(Math.hypot(sx-c.x, sy-c.y) - screenR);
+    if (d>=HIT_PX || d>=bestD) continue;
+    if (o.type==='ARC') {
+      const ang = Math.atan2(wp.y-o.cy, wp.x-o.cx);
+      if (!angleOnArc(ang, o.startA, o.endA, o.ccw)) continue;
+    }
+    bestD=d;
+    best={ kind:o.type.toLowerCase(), cx:o.cx, cy:o.cy, r:o.r, startA:o.startA, endA:o.endA, ccw:o.ccw, layer:o.layer };
+  }
+  return best;
 }
 
 // ── RECTANGLE TOOL ──────────────────────────────────────
@@ -4164,7 +4271,7 @@ function cancelTool() {
   lineChain   = [];
   rectState   = {active:false};
   polyState   = {active:false};
-  offsetState = {active:false, selectedLine:null, previewPts:null};
+  offsetState = {active:false, selected:null, preview:null};
   circleState = {active:false};
   arcState = {active:false,phase:0,p1:null,p2:null};
   filletState = {active:false,firstLine:null};
@@ -5124,23 +5231,26 @@ function onMouseDown(e) {
 
     if(activeTool==='offset') {
       if(!offsetState.active){
-        const hit=pickLine(mouseScreen.x,mouseScreen.y);
+        const hit=pickOffsettable(mouseScreen.x,mouseScreen.y);
         if(hit){
           offsetState.active=true;
-          offsetState.selectedLine=hit;
+          offsetState.selected=hit;
           // Open distance popup at click position
           const rect=canvas.getBoundingClientRect();
           openOffsetPopup(rect.left + mouseScreen.x, rect.top + mouseScreen.y);
         } else {
-          showToast('Click closer to a line');
+          showToast('Click closer to a line, polyline edge, circle or arc');
         }
       } else {
-        if(offsetState.previewPts){
-          const p=offsetState.previewPts;
-          GeoMemory.addLine(p.x1,p.y1,p.x2,p.y2);
+        const p=offsetState.preview, sel=offsetState.selected;
+        if(p && sel){
+          const layer = sel.layer || 'Layer_0';
+          if(p.kind==='circle')      GeoMemory.addCircle(p.cx,p.cy,p.r, layer);
+          else if(p.kind==='arc')    GeoMemory.addArc(p.cx,p.cy,p.r,p.startA,p.endA,p.ccw, layer);
+          else                       GeoMemory.addLine(p.x1,p.y1,p.x2,p.y2, layer);
           showToast('Offset committed · '+fmtU(getOffsetDist()));
         }
-        offsetState={active:false,selectedLine:null,previewPts:null};
+        offsetState={active:false,selected:null,preview:null};
       }
       render(); return;
     }
@@ -5338,10 +5448,18 @@ function onMouseMove(e) {
   }
 
   // Offset preview update
-  if(activeTool==='offset'&&offsetState.active&&offsetState.selectedLine){
-    const ln=offsetState.selectedLine;
-    const side=sideOfLine(ln.x1,ln.y1,ln.x2,ln.y2,mouseWorld.x,mouseWorld.y);
-    offsetState.previewPts=buildOffsetLine(ln,side*getOffsetDist());
+  if(activeTool==='offset'&&offsetState.active&&offsetState.selected){
+    const sel=offsetState.selected;
+    if(sel.kind==='circle'||sel.kind==='arc'){
+      // Cursor beyond the curve grows it outward; inside shrinks it inward —
+      // the radial equivalent of "offset toward whichever side you're on".
+      const side = Math.hypot(mouseWorld.x-sel.cx, mouseWorld.y-sel.cy) > sel.r ? 1 : -1;
+      const dist = side*getOffsetDist();
+      offsetState.preview = sel.kind==='circle' ? buildOffsetCircle(sel,dist) : buildOffsetArc(sel,dist);
+    } else {
+      const side=sideOfLine(sel.x1,sel.y1,sel.x2,sel.y2,mouseWorld.x,mouseWorld.y);
+      offsetState.preview={kind:'line', ...buildOffsetLine(sel,side*getOffsetDist())};
+    }
   }
 
   // Rotate preview: update live delta as cursor moves, handle pivot drag
@@ -6194,7 +6312,8 @@ function getLayer(name) {
 function setActiveLayer(name) {
   if (!LAYERS[name]) return;
   activeLayer = name;
-  // Update layer UI
+  // Update layer UI — .layer-row exists in both the sidebar panel and the
+  // tab-bar dropdown, so this querySelectorAll covers both at once.
   document.querySelectorAll('.layer-row').forEach(el => {
     el.classList.toggle('active', el.dataset.layer === name);
   });
@@ -6205,9 +6324,10 @@ function setActiveLayer(name) {
     indicator.style.color = lay.color;
   }
   updateDrawLayerChip();
+  updateLayerDropdownLabel();
+  closeLayerDropdown();   // picking a layer is the end of the interaction
   showToast('Drawing on layer: ' + lay.name);
 }
-
 // Mirrors the active layer onto the canvas overlay, so the drawing layer
 // is visible even with the sidebar closed — which is the default on
 // mobile, where the layer panel is otherwise entirely out of sight.
@@ -6255,41 +6375,81 @@ function toggleLayerVisibility(name) {
 }
 
 
-function buildLayerPanel() {
-  const panel = document.getElementById('layer-list');
-  if (!panel) return;
-  panel.innerHTML = '';
-  for (const [key, lay] of Object.entries(LAYERS)) {
-    const row = document.createElement('div');
-    row.className = 'layer-row' + (key === activeLayer ? ' active' : '');
-    row.dataset.layer = key;
+// Builds one layer row. Both mount points — the sidebar panel and the
+// tab-bar dropdown — render from this single builder so the two can never
+// drift apart or grow separate feature sets.
+function buildLayerRow(key, lay) {
+  const row = document.createElement('div');
+  row.className = 'layer-row' + (key === activeLayer ? ' active' : '');
+  row.dataset.layer = key;
 
-    // Line 1 — visibility, live colour picker, name, expand toggle.
-    // The colour input edits LAYERS directly, so it flows straight into
-    // both the canvas render and the DXF layer table on export.
-    const ltOpts = Object.keys(LINETYPES).map(k =>
-      `<option value="${k}"${k===lay.ltype?' selected':''}>${LINETYPES[k].label}</option>`).join('');
-    row.innerHTML =
-      '<span class="layer-vis" onclick="toggleLayerVisibility(\''+key+'\');event.stopPropagation()" title="Toggle visibility">'
-        + (lay.visible ? '👁' : '○') + '</span>'
-      + '<input type="color" class="layer-color" value="'+lay.color+'" title="Layer colour" '
-        + 'onclick="event.stopPropagation()" oninput="setLayerColor(\''+key+'\', this.value)">'
-      + '<span class="layer-name">' + lay.name + '</span>'
-      + '<span class="layer-edit" title="Layer settings" '
-        + 'onclick="event.stopPropagation();this.parentNode.classList.toggle(\'expanded\')">⚙</span>'
-      + '<div class="layer-opts" onclick="event.stopPropagation()">'
-        + '<select class="layer-lt" title="Linetype" onchange="setLayerLtype(\''+key+'\', this.value)">'+ltOpts+'</select>'
-        + '<input type="number" class="layer-wt" title="Lineweight" min="0.1" max="10" step="0.1" '
-          + 'value="'+lay.weight+'" oninput="setLayerWeight(\''+key+'\', this.value)">'
-        + '<button class="layer-btn" title="Rename" onclick="renameLayer(\''+key+'\')">✎</button>'
-        + '<button class="layer-btn del" title="Delete layer" onclick="deleteLayer(\''+key+'\')">✕</button>'
-      + '</div>';
-    row.onclick = () => setActiveLayer(key);
-    panel.appendChild(row);
-  }
-  updateDrawLayerChip();
+  // Line 1 — visibility, live colour picker, name, expand toggle.
+  // The colour input edits LAYERS directly, so it flows straight into
+  // both the canvas render and the DXF layer table on export.
+  const ltOpts = Object.keys(LINETYPES).map(k =>
+    `<option value="${k}"${k===lay.ltype?' selected':''}>${LINETYPES[k].label}</option>`).join('');
+  row.innerHTML =
+    '<span class="layer-vis" onclick="toggleLayerVisibility(\''+key+'\');event.stopPropagation()" title="Toggle visibility">'
+      + (lay.visible ? '👁' : '○') + '</span>'
+    + '<input type="color" class="layer-color" value="'+lay.color+'" title="Layer colour" '
+      + 'onclick="event.stopPropagation()" oninput="setLayerColor(\''+key+'\', this.value)">'
+    + '<span class="layer-name">' + lay.name + '</span>'
+    + '<span class="layer-edit" title="Layer settings" '
+      + 'onclick="event.stopPropagation();this.parentNode.classList.toggle(\'expanded\')">⚙</span>'
+    + '<div class="layer-opts" onclick="event.stopPropagation()">'
+      + '<select class="layer-lt" title="Linetype" onchange="setLayerLtype(\''+key+'\', this.value)">'+ltOpts+'</select>'
+      + '<input type="number" class="layer-wt" title="Lineweight" min="0.1" max="10" step="0.1" '
+        + 'value="'+lay.weight+'" oninput="setLayerWeight(\''+key+'\', this.value)">'
+      + '<button class="layer-btn" title="Rename" onclick="renameLayer(\''+key+'\')">✎</button>'
+      + '<button class="layer-btn del" title="Delete layer" onclick="deleteLayer(\''+key+'\')">✕</button>'
+    + '</div>';
+  row.onclick = () => setActiveLayer(key);
+  return row;
 }
 
+function buildLayerPanel() {
+  const targets = [document.getElementById('layer-list'),
+                   document.getElementById('layer-dd-list')].filter(Boolean);
+  if (!targets.length) return;
+  for (const panel of targets) {
+    panel.innerHTML = '';
+    for (const [key, lay] of Object.entries(LAYERS)) panel.appendChild(buildLayerRow(key, lay));
+  }
+  updateDrawLayerChip();
+  updateLayerDropdownLabel();
+}
+
+// The dropdown button doubles as a permanent readout of the drawing
+// layer — its swatch and name track the active layer even while closed.
+function updateLayerDropdownLabel() {
+  const nameEl = document.getElementById('layer-dd-name');
+  const swEl   = document.getElementById('layer-dd-swatch');
+  if (!nameEl) return;
+  const lay = getLayer(activeLayer);
+  nameEl.textContent = lay.name;
+  nameEl.style.color = lay.color;
+  if (swEl) swEl.style.background = lay.color;
+}
+
+function toggleLayerDropdown(ev) {
+  if (ev) ev.stopPropagation();
+  const wrap = document.getElementById('layer-dd-wrap');
+  if (!wrap) return;
+  wrap.classList.toggle('open');
+}
+function closeLayerDropdown() {
+  const wrap = document.getElementById('layer-dd-wrap');
+  if (wrap) wrap.classList.remove('open');
+}
+// Any click outside the control closes it — but never a click on the
+// rows inside it, which have their own handlers (colour picker, ⚙
+// expander, lineweight field) that must not be cut short.
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#layer-dd-wrap')) closeLayerDropdown();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeLayerDropdown();
+});
 // ── Layer property editors ────────────────────────────────────────────
 // Each writes straight into LAYERS, so a change shows on canvas at once
 // and carries through to DXF export (colour → ACI, ltype → LTYPE table).
@@ -6299,6 +6459,7 @@ function setLayerColor(key, hex) {
   const ind = document.getElementById('active-layer-indicator');
   if (key === activeLayer && ind) ind.style.color = hex;
   updateDrawLayerChip();
+  updateLayerDropdownLabel();
   render();
 }
 function setLayerLtype(key, lt) {
@@ -6755,29 +6916,41 @@ function drawRubberBand() {
   ctx.restore();
 }
 
+// Strokes a line/circle/arc-shaped offset object (whichever `kind` it
+// carries) in the given style. Circle/arc use the same worldToScreen +
+// angle-negation convention as the main renderer (screen Y is flipped
+// from world Y, so both the angle sign and the sweep direction invert).
+function strokeOffsetShape(o) {
+  if(o.kind==='circle'){
+    const sc=worldToScreen(o.cx,o.cy);
+    ctx.beginPath(); ctx.arc(sc.x,sc.y,o.r*cam.zoom,0,Math.PI*2); ctx.stroke();
+  } else if(o.kind==='arc'){
+    const sc=worldToScreen(o.cx,o.cy);
+    ctx.beginPath(); ctx.arc(sc.x,sc.y,o.r*cam.zoom,-o.endA,-o.startA,!o.ccw); ctx.stroke();
+  } else {
+    const a=worldToScreen(o.x1,o.y1), b=worldToScreen(o.x2,o.y2);
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  }
+}
+
 function drawOffsetPreview() {
   if(activeTool!=='offset') return;
   ctx.save();
-  if(offsetState.selectedLine){
-    const ln=offsetState.selectedLine;
-    const a=worldToScreen(ln.x1,ln.y1), b=worldToScreen(ln.x2,ln.y2);
+  if(offsetState.selected){
     ctx.strokeStyle='rgba(255,170,0,0.9)'; ctx.lineWidth=2.5;
     ctx.shadowColor='rgba(255,170,0,0.4)'; ctx.shadowBlur=6;
-    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+    strokeOffsetShape(offsetState.selected);
     ctx.shadowBlur=0;
   }
-  if(offsetState.previewPts){
-    const p=offsetState.previewPts;
-    const a=worldToScreen(p.x1,p.y1), b=worldToScreen(p.x2,p.y2);
+  if(offsetState.preview){
     ctx.strokeStyle='rgba(0,255,157,0.85)'; ctx.lineWidth=1.5;
     ctx.shadowColor='rgba(0,255,157,0.35)'; ctx.shadowBlur=8;
     ctx.setLineDash([5,4]);
-    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+    strokeOffsetShape(offsetState.preview);
     ctx.setLineDash([]); ctx.shadowBlur=0;
   }
   ctx.restore();
 }
-
 // ── DXF IMPORT ──────────────────────────────────────────
 // Parses DXF R12–R2018 text files.
 // Handles: LINE, CIRCLE, ARC, LWPOLYLINE, POLYLINE/VERTEX.
@@ -7598,6 +7771,10 @@ requestAnimationFrame(()=>{
     // the app opens ready to draw. This is the authoritative init — it
     // runs two frames after all scripts, so the tool must be set HERE.
     setTool('pline');
+    // The layer list was never populated at startup — buildLayerPanel()
+    // was only ever called from the add/rename/delete/visibility actions,
+    // so #layer-list rendered empty on load with nothing in it to click.
+    buildLayerPanel();
     document.getElementById('cc-year').textContent = new Date().getFullYear();
     initSplash();
     setTimeout(()=>{
@@ -9217,7 +9394,11 @@ kInput.addEventListener('keydown', function(e) {
   setTimeout(() => {
     const v = kInput.value.trim();
     if (!kPrefix) return;
-    if (v.startsWith('@') && v.includes('<')) kPrefix.textContent = 'POL';
+    // 'SCR' (multi-token script line) was dropped when this fork rewrote
+    // bar submission — a line like "LINE 0,0 0,10 COMMIT" was falling
+    // through to KMD/ABS instead. Restored to match KAD.
+    if (v.includes(' '))                      kPrefix.textContent = 'SCR';
+    else if (v.startsWith('@') && v.includes('<')) kPrefix.textContent = 'POL';
     else if (v.startsWith('@'))               kPrefix.textContent = 'REL';
     else if (v.match(/^[a-zA-Z]/))            kPrefix.textContent = 'KMD';
     else if (v.match(/^[0-9+\-]/))           kPrefix.textContent = 'ABS';
